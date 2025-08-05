@@ -727,7 +727,7 @@ name = "primalbedtools"
 version = "0.10.0"
 source = { path = "../primalbedtools/dist/primalbedtools-0.10.0-py3-none-any.whl" }
 wheels = [
-    { filename = "primalbedtools-0.10.0-py3-none-any.whl", hash = "sha256:97f3c9918c4f12e38f06e94b2a4755f3ab7dbb29edfb30435ed17d03bb1b1631" },
+    { filename = "primalbedtools-0.10.0-py3-none-any.whl", hash = "sha256:81f16d4e005962531e5ab5d34963a0463d841e5179945928e563f45eab487f00" },
 ]
 
 [[package]]
