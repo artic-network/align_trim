@@ -244,14 +244,14 @@ def handle_segment(
     if segment.is_unmapped:
         if args.verbose:
             print(
-                f"{segment.query_name}: {segment.query_name} skipped as unmapped",
+                f"{segment.query_name}: skipped as unmapped",
                 file=sys.stderr,
             )
         return False
     if segment.is_supplementary:
         if args.verbose:
             print(
-                f"{segment.query_name}: {segment.query_name} skipped as supplementary",
+                f"{segment.query_name}: skipped as supplementary",
                 file=sys.stderr,
             )
         return False
@@ -1010,7 +1010,9 @@ def main():
     )
     parser.add_argument("bedfile", help="BED file containing the amplicon scheme")
     parser.add_argument(
-        "--normalise", type=int, help="Subsample to n coverage per strand"
+        "--normalise",
+        type=int,
+        help="Subsample to n coverage per strand. Use 0 for no normalisation",
     )
     parser.add_argument(
         "--min-mapq", type=int, default=20, help="Minimum mapping quality to keep"
