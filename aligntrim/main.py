@@ -893,7 +893,11 @@ def go(args):
     pools_str.add("unmatched")
 
     # open the input SAM file and process read groups
-    infile = pysam.AlignmentFile("-", "rb")
+    if args.bamfile:
+        infile = pysam.AlignmentFile(args.bamfile, "rb")
+    else:
+        infile = pysam.AlignmentFile("-", "rb")
+
     bam_header = infile.header.copy().to_dict()
     if not args.no_read_groups:
         bam_header["RG"] = []
@@ -1024,9 +1028,12 @@ def go(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Trim alignments from an amplicon scheme."
+        description="Trim alignments from an amplicon scheme. Bam (input) can be provided by --bamfile or stdin"
     )
     parser.add_argument("bedfile", help="BED file containing the amplicon scheme")
+    parser.add_argument(
+        "--bamfile", help="BAM file containing the aligned reads", required=False
+    )
     parser.add_argument(
         "--normalise",
         type=int,
