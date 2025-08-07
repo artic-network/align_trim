@@ -244,14 +244,14 @@ def handle_segment(
     if segment.is_unmapped:
         if args.verbose:
             print(
-                f"{segment.query_name}: {segment.query_name} skipped as unmapped",
+                f"{segment.query_name}: skipped as unmapped",
                 file=sys.stderr,
             )
         return False
     if segment.is_supplementary:
         if args.verbose:
             print(
-                f"{segment.query_name}: {segment.query_name} skipped as supplementary",
+                f"{segment.query_name}: skipped as supplementary",
                 file=sys.stderr,
             )
         return False
@@ -259,6 +259,14 @@ def handle_segment(
         if args.verbose:
             print(
                 f"{segment.query_name}: skipped as mapping quality below threshold",
+                file=sys.stderr,
+            )
+        return False
+
+    if segment.reference_end is None:
+        if args.verbose:
+            print(
+                f"{segment.query_name}: skipped as no mapping data",
                 file=sys.stderr,
             )
         return False
@@ -329,6 +337,16 @@ def handle_segment(
             )
         return False
 
+    # Check require-full-length
+    if args.require_full_length:
+        if segment.reference_start > p1.end or segment.reference_end < p2.start:
+            if args.verbose:
+                print(
+                    f"{segment.query_name}: does not span a full amplicon",
+                    file=sys.stderr,
+                )
+            return False
+
     # get the primer positions
     if args.trim_primers:
         p1_position = p1.end
@@ -354,7 +372,7 @@ def handle_segment(
             return False
 
     # softmask the alignment if right primer start/end inside alignment
-    if segment.reference_end > p2_position:  # type: ignore
+    if segment.reference_end > p2_position:
         try:
             trim(segment, p2_position, True, args.verbose)
             if args.verbose:
@@ -1010,7 +1028,9 @@ def main():
     )
     parser.add_argument("bedfile", help="BED file containing the amplicon scheme")
     parser.add_argument(
-        "--normalise", type=int, help="Subsample to n coverage per strand"
+        "--normalise",
+        type=int,
+        help="Subsample to n coverage per strand. Use 0 for no normalisation",
     )
     parser.add_argument(
         "--min-mapq", type=int, default=20, help="Minimum mapping quality to keep"
@@ -1043,6 +1063,11 @@ def main():
     )
     parser.add_argument("--verbose", action="store_true", help="Debug mode")
     parser.add_argument("--remove-incorrect-pairs", action="store_true")
+    parser.add_argument(
+        "--require-full-length",
+        action="store_true",
+        help="Requires all reads to start and stop in a primer site",
+    )
 
     args = parser.parse_args()
 
