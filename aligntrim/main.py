@@ -6,16 +6,49 @@ import numpy as np
 import random
 import argparse
 from collections import defaultdict
+from typing import Optional
+
+from aligntrim import __VERSION__
 
 
 from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import BedLine
+from primalbedtools.bedfiles import BedLine, merge_primers
+from primalbedtools.amplicons import Amplicon, create_amplicons
+
+RANDOM_SEED = 42
+
 
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
 consumesReference = [True, False, True, True, False, False, False, True]
 
 # consumesQuery lookup for if a CIGAR operation consumes the query sequence
 consumesQuery = [True, True, False, False, True, False, False, True]
+
+
+def find_primer_with_lookup(lookup, pos, direction, chrom) -> Optional[BedLine]:
+    pos_amps = lookup[chrom][:, pos]  # Search both pools for amplicons at this position
+    closest_dist = float("inf")
+    closest_p = None
+    if direction == "+":
+        # Loops over pool O(N)
+        for amp in pos_amps:
+            if amp is None:
+                continue
+            dist = abs(amp.coverage_start - pos)
+            if dist < closest_dist:
+                closest_p = amp.left[0]
+                closest_dist = dist
+    elif direction == "-":
+        for amp in pos_amps:
+            if amp is None:
+                continue
+            dist = abs(amp.coverage_end - pos)
+            if dist < closest_dist:
+                closest_p = amp.right[0]
+                closest_dist = dist
+    else:
+        pass
+    return closest_p
 
 
 def find_primer(primers: list[BedLine], pos, direction, chrom, threshold=35):
@@ -41,18 +74,14 @@ def find_primer(primers: list[BedLine], pos, direction, chrom, threshold=35):
         primer_distances = [
             (abs(bl.start - pos), bl.start - pos, bl)
             for bl in primers
-            if (bl.strand == direction)
-            and (pos >= (bl.start - threshold))
-            and chrom == bl.chrom
+            if (pos >= (bl.start - threshold)) and chrom == bl.chrom
         ]
 
     else:
         primer_distances = [
-            (abs(bl.end - pos), bl.end, bl)
+            (abs(bl.end - pos), bl.end - pos, bl)
             for bl in primers
-            if (bl.strand == direction)
-            and (pos <= (bl.end + threshold))
-            and chrom == bl.chrom
+            if (pos <= (bl.end + threshold)) and chrom == bl.chrom
         ]
 
     if not primer_distances:
@@ -194,7 +223,7 @@ def trim(segment, primer_pos, end, verbose=False):
 
 def handle_segment(
     segment: pysam.AlignedSegment,
-    primers: list[BedLine],
+    lookup,
     args: argparse.Namespace,
     min_mapq: int,
     report_writer: csv.DictWriter = False,  # type: ignore
@@ -235,21 +264,18 @@ def handle_segment(
         return False
 
     # locate the nearest primers to this alignment segment
-    # p1 = find_primer(bed, segment.reference_start, "+", segment.reference_name, args.primer_match_threshold)
-    p1 = find_primer(
-        primers=primers,
+    p1 = find_primer_with_lookup(
+        lookup=lookup,
         pos=segment.reference_start,
         direction="+",
         chrom=segment.reference_name,
-        threshold=args.primer_match_threshold,
     )
-    # p2 = find_primer(bed, segment.reference_end, "-", segment.reference_name, args.primer_match_threshold)
-    p2 = find_primer(
-        primers=primers,
+
+    p2 = find_primer_with_lookup(
+        lookup=lookup,
         pos=segment.reference_end,
         direction="-",
         chrom=segment.reference_name,
-        threshold=args.primer_match_threshold,
     )
 
     if not p1 or not p2:
@@ -263,16 +289,16 @@ def handle_segment(
     # check if primers are correctly paired and then assign read group
     # NOTE: removed this as a function as only called once
     # TODO: will try improving this / moving it to the primer scheme processing code
-    correctly_paired = p1[2].amplicon_number == p2[2].amplicon_number
+    correctly_paired = p1.amplicon_number == p2.amplicon_number
 
     if not args.no_read_groups:
         if correctly_paired:
-            segment.set_tag("RG", p1[2].pool)
+            segment.set_tag("RG", str(p1.pool))
         else:
             segment.set_tag("RG", "unmatched")
 
     # get the amplicon number
-    amplicon = p1[2].amplicon_number
+    amplicon = p1.amplicon_number
 
     if args.report:
         # update the report with this alignment segment + primer details
@@ -281,15 +307,15 @@ def handle_segment(
             "QueryName": segment.query_name,
             "ReferenceStart": segment.reference_start,
             "ReferenceEnd": segment.reference_end,
-            "PrimerPair": f"{p1[2].primername}_{p2[2].primername}",
-            "Primer1": p1[2].primername,
-            "Primer1Start": p1[2].start,
-            "Primer2": p2[2].primername,
-            "Primer2Start": p2[2].start,
+            "PrimerPair": f"{p1.primername}_{p2.primername}",
+            "Primer1": p1.primername,
+            "Primer1Start": p1.start,
+            "Primer2": p2.primername,
+            "Primer2Start": p2.start,
             "IsSecondary": segment.is_secondary,
             "IsSupplementary": segment.is_supplementary,
-            "Start": p1[2].start,
-            "End": p2[2].end,
+            "Start": p1.start,
+            "End": p2.end,
             "CorrectlyPaired": correctly_paired,
         }
 
@@ -305,11 +331,11 @@ def handle_segment(
 
     # get the primer positions
     if args.trim_primers:
-        p1_position = p1[2].end
-        p2_position = p2[2].start
+        p1_position = p1.end
+        p2_position = p2.start
     else:
-        p1_position = p1[2].start
-        p2_position = p2[2].end
+        p1_position = p1.start
+        p2_position = p2.end
 
     # softmask the alignment if left primer start/end inside alignment
     if segment.reference_start < p1_position:
@@ -357,7 +383,7 @@ def handle_segment(
 
 def handle_paired_segment(
     segments: tuple[pysam.AlignedSegment, pysam.AlignedSegment],
-    primers: list[BedLine],
+    lookup,
     args: argparse.Namespace,
     min_mapq: int,
     report_writer: csv.DictWriter = False,  # type: ignore
@@ -411,22 +437,20 @@ def handle_paired_segment(
         return False
 
     # locate the nearest primers to this alignment segment
-    p1 = find_primer(
-        primers=primers,
+    p1 = find_primer_with_lookup(
+        lookup=lookup,
         pos=segment1.reference_start,
         direction="+",
         chrom=segment1.reference_name,
-        threshold=args.primer_match_threshold,
     )
-    p2 = find_primer(
-        primers=primers,
+    p2 = find_primer_with_lookup(
+        lookup=lookup,
         pos=segment2.reference_end,
         direction="-",
         chrom=segment2.reference_name,
-        threshold=args.primer_match_threshold,
     )
 
-    if not p1 or not p2:
+    if p1 is None or p2 is None:
         if args.verbose:
             print(
                 f"{segment1.query_name}: Pair skipped as no primer found for at least one read in pair",
@@ -437,18 +461,18 @@ def handle_paired_segment(
     # check if primers are correctly paired and then assign read group
     # NOTE: removed this as a function as only called once
     # TODO: will try improving this / moving it to the primer scheme processing code
-    correctly_paired = p1[2].amplicon_prefix == p2[2].amplicon_prefix
+    correctly_paired = p1.amplicon_prefix == p2.amplicon_prefix
 
     if not args.no_read_groups:
         if correctly_paired:
-            segment1.set_tag("RG", p1[2].pool)
-            segment2.set_tag("RG", p1[2].pool)
+            segment1.set_tag("RG", str(p1.pool))
+            segment2.set_tag("RG", str(p1.pool))
         else:
             segment1.set_tag("RG", "unmatched")
             segment2.set_tag("RG", "unmatched")
 
     # get the amplicon number
-    amplicon = p1[2].amplicon_number
+    amplicon = p1.amplicon_number
 
     if args.report:
         # update the report with this alignment segment + primer details
@@ -457,15 +481,15 @@ def handle_paired_segment(
             "QueryName": segment1.query_name,
             "ReferenceStart": segment1.reference_start,
             "ReferenceEnd": segment2.reference_end,
-            "PrimerPair": f"{p1[2].primername}_{p2[2].primername}",
-            "Primer1": p1[2].primername,
-            "Primer1Start": p1[2].start,
-            "Primer2": p2[2].primername,
-            "Primer2Start": p2[2].start,
+            "PrimerPair": f"{p1.primername}_{p2.primername}",
+            "Primer1": p1.primername,
+            "Primer1Start": p1.start,
+            "Primer2": p2.primername,
+            "Primer2Start": p2.start,
             "IsSecondary": segment1.is_secondary,
             "IsSupplementary": segment1.is_supplementary,
-            "Start": p1[2].start,
-            "End": p2[2].end,
+            "Start": p1.start,
+            "End": p2.end,
             "CorrectlyPaired": correctly_paired,
         }
 
@@ -481,11 +505,11 @@ def handle_paired_segment(
 
     # get the primer positions
     if args.trim_primers:
-        p1_position = p1[2].end
-        p2_position = p2[2].start
+        p1_position = p1.end
+        p2_position = p2.start
     else:
-        p1_position = p1[2].start
-        p2_position = p2[2].end
+        p1_position = p1.start
+        p2_position = p2.end
 
     # softmask the alignment if left primer start/end inside alignment
     if segment1.reference_start < p1_position:
@@ -659,7 +683,7 @@ def normalise(
                     )
                 continue
 
-            random.shuffle(segments)
+            random.Random(RANDOM_SEED).shuffle(segments)
 
             distance = np.mean(np.abs(amplicon_depth - desired_depth))
 
@@ -733,7 +757,7 @@ def normalise_paired(trimmed_segments: dict, normalise: int, primers: list[BedLi
                 )
                 continue
 
-            random.shuffle(segments)
+            random.Random(RANDOM_SEED).shuffle(segments)
 
             distance = np.mean(np.abs(amplicon_depth - desired_depth))
 
@@ -792,6 +816,25 @@ def read_pair_generator(bam, region_string=None):
             del read_dict[qname]
 
 
+def create_primer_lookup(ref_len_tuple, pools, amplicons: list[Amplicon], padding=35):
+    """
+    Returns a dict of chroms, each containing a (max(pools), chrom_len) shaped array
+    """
+    lookups = {}
+    for chrom, chromlen in ref_len_tuple:
+        a = np.empty_like(None, shape=(max(pools), chromlen + 1))
+        for amp in amplicons:
+            if amp.chrom == chrom:
+                a[
+                    amp.ipool,
+                    max(amp.amplicon_start - padding, 0) : min(
+                        amp.amplicon_end + padding, chromlen
+                    ),
+                ] = amp
+        lookups[chrom] = a
+    return lookups
+
+
 def go(args):
     """Filter and soft mask an alignment file so that the alignment boundaries match the primer start and end sites.
 
@@ -821,22 +864,39 @@ def go(args):
 
     # open the primer scheme and get the pools
     scheme = Scheme.from_file(args.bedfile)
+
+    # Merge the primers
+    scheme.bedlines = merge_primers(scheme.bedlines)
+
     pools = set([bl.pool for bl in scheme.bedlines])
     chroms = set([bl.chrom for bl in scheme.bedlines])
-    pools.add(-1)  # unmatched
+
+    pools_str = {str(x) for x in pools}
+    pools_str.add("unmatched")
 
     # open the input SAM file and process read groups
     infile = pysam.AlignmentFile("-", "rb")
     bam_header = infile.header.copy().to_dict()
     if not args.no_read_groups:
         bam_header["RG"] = []
-        for pool in pools:
+        for pool in sorted(pools_str):  # set order can be non deterministic
             read_group = {}
             read_group["ID"] = pool
             bam_header["RG"].append(read_group)
 
+    cli_cmd = " ".join(sys.argv)
+    bam_header["PG"].append(
+        {"PN": "aligntrim", "ID": "aligntrim", "VN": __VERSION__, "CL": cli_cmd}
+    )
+
     # prepare the alignment outfile
     outfile = pysam.AlignmentFile("-", "wh", header=bam_header)
+
+    amplicons = create_amplicons(scheme.bedlines)
+
+    # Create a lookup table for primer location
+    ref_lengths = [(r, infile.get_reference_length(r)) for r in infile.references]
+    primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
 
     trimmed_segments = {x: {} for x in chroms}
 
@@ -847,7 +907,7 @@ def go(args):
             if args.report:
                 trimming_tuple = handle_paired_segment(
                     segments=segments,  # type: ignore
-                    primers=scheme.bedlines,
+                    lookup=primer_lookup,
                     args=args,
                     report_writer=report_writer,  # type: ignore
                     min_mapq=args.min_mapq,
@@ -855,7 +915,7 @@ def go(args):
             else:
                 trimming_tuple = handle_paired_segment(
                     segments=segments,  # type: ignore
-                    primers=scheme.bedlines,
+                    lookup=primer_lookup,
                     args=args,
                     min_mapq=args.min_mapq,
                 )
@@ -891,17 +951,17 @@ def go(args):
             if args.report:
                 trimming_tuple = handle_segment(
                     segment=segment,
-                    primers=scheme.bedlines,
                     args=args,
                     report_writer=report_writer,  # type: ignore
                     min_mapq=args.min_mapq,
+                    lookup=primer_lookup,
                 )
             else:
                 trimming_tuple = handle_segment(
                     segment=segment,
-                    primers=scheme.bedlines,
                     args=args,
                     min_mapq=args.min_mapq,
+                    lookup=primer_lookup,
                 )
             if not trimming_tuple:
                 continue
