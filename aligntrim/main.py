@@ -263,6 +263,14 @@ def handle_segment(
             )
         return False
 
+    if segment.reference_end is None:
+        if args.verbose:
+            print(
+                f"{segment.query_name}: skipped as no mapping data",
+                file=sys.stderr,
+            )
+        return False
+
     # locate the nearest primers to this alignment segment
     p1 = find_primer_with_lookup(
         lookup=lookup,
@@ -329,6 +337,16 @@ def handle_segment(
             )
         return False
 
+    # Check require-full-length
+    if args.require_full_length:
+        if segment.reference_start > p1.end or segment.reference_end < p2.start:
+            if args.verbose:
+                print(
+                    f"{segment.query_name}: does not span a full amplicon",
+                    file=sys.stderr,
+                )
+            return False
+
     # get the primer positions
     if args.trim_primers:
         p1_position = p1.end
@@ -354,7 +372,7 @@ def handle_segment(
             return False
 
     # softmask the alignment if right primer start/end inside alignment
-    if segment.reference_end > p2_position:  # type: ignore
+    if segment.reference_end > p2_position:
         try:
             trim(segment, p2_position, True, args.verbose)
             if args.verbose:
@@ -1045,6 +1063,11 @@ def main():
     )
     parser.add_argument("--verbose", action="store_true", help="Debug mode")
     parser.add_argument("--remove-incorrect-pairs", action="store_true")
+    parser.add_argument(
+        "--require-full-length",
+        action="store_true",
+        help="Requires all reads to start and stop in a primer site",
+    )
 
     args = parser.parse_args()
 
