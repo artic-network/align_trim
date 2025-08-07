@@ -11,11 +11,10 @@ Currently under development !
 - Improved `find_primer()` algorithm (~10x performance gain)
 - Refactored existing (3) tests to pytest
 - Updates output SAM header with command 
+- Added `require-full-length` flag
 
 
 ## TODO 
-- Add and implement `require-full-length` flag
-    - Require the read to start / stop in a matching primer site
 - More tests
     - New logic 
     - Old logic 
