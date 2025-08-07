@@ -2,8 +2,7 @@ version = 1
 revision = 2
 requires-python = ">=3.9"
 resolution-markers = [
-    "python_full_version >= '3.12'",
-    "python_full_version == '3.11.*'",
+    "python_full_version >= '3.11'",
     "python_full_version == '3.10.*'",
     "python_full_version < '3.10'",
 ]
@@ -30,7 +29,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.0.2" },
-    { name = "primalbedtools", specifier = ">=0.10.0" },
+    { name = "primalbedtools", specifier = ">=0.10.1" },
     { name = "pysam", specifier = ">=0.23.3" },
 ]
 
@@ -241,8 +240,7 @@ name = "numpy"
 version = "2.3.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.12'",
-    "python_full_version == '3.11.*'",
+    "python_full_version >= '3.11'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/37/7d/3fec4199c5ffb892bed55cff901e4f39a58c81df9c44c280499e92cad264/numpy-2.3.2.tar.gz", hash = "sha256:e0486a11ec30cdecb53f184d496d1c6a20786c81e55e41640270130056f8ee48", size = 20489306, upload-time = "2025-07-24T21:32:07.553Z" }
 wheels = [
@@ -366,11 +364,11 @@ wheels = [
 
 [[package]]
 name = "primalbedtools"
-version = "0.10.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c7/a8/f2fb546a5d3a5225e05b399fe2ada2b6e1d9f83758e2d5330dd738ed5e44/primalbedtools-0.10.0.tar.gz", hash = "sha256:81ad82af9344ecb04f7d81194b4c734d3db15fa2370553e5690da558bd58331e", size = 23645885, upload-time = "2025-08-07T12:01:25.709Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/fc/e468266cff10b7150bb04070a2d128a29f584ec6ea684430efd858dec0f5/primalbedtools-0.10.1.tar.gz", hash = "sha256:1fe17f4327abfc066ff789ca15f95c1aa8dcba33c5e4dc4718c4f574de7b9ce3", size = 23645855, upload-time = "2025-08-07T13:43:31.385Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/20/18097dddcd253065eb671aeb8932fa0f9a19630a2e3a568f211b9ec46973/primalbedtools-0.10.0-py3-none-any.whl", hash = "sha256:81f16d4e005962531e5ab5d34963a0463d841e5179945928e563f45eab487f00", size = 20465, upload-time = "2025-08-07T12:01:21.77Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/53/01e449328676241a468fcd1713938c1d66290f2ac8a0550a985e42b20208/primalbedtools-0.10.1-py3-none-any.whl", hash = "sha256:95a9ae66e9dc987bcbddf830ef0676dd1dd323404c4aa92c1e4df67a042eccae", size = 20482, upload-time = "2025-08-07T13:43:27.176Z" },
 ]
 
 [[package]]
@@ -566,14 +564,14 @@ wheels = [
 
 [[package]]
 name = "virtualenv"
-version = "20.33.0"
+version = "20.33.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "distlib" },
     { name = "filelock" },
     { name = "platformdirs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/2e/8a70dcbe8bf15213a08f9b0325ede04faca5d362922ae0d62ef0fa4b069d/virtualenv-20.33.0.tar.gz", hash = "sha256:47e0c0d2ef1801fce721708ccdf2a28b9403fa2307c3268aebd03225976f61d2", size = 6082069, upload-time = "2025-08-03T08:09:19.014Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/60/4f20960df6c7b363a18a55ab034c8f2bcd5d9770d1f94f9370ec104c1855/virtualenv-20.33.1.tar.gz", hash = "sha256:1b44478d9e261b3fb8baa5e74a0ca3bc0e05f21aa36167bf9cbf850e542765b8", size = 6082160, upload-time = "2025-08-05T16:10:55.605Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/87/b22cf40cdf7e2b2bf83f38a94d2c90c5ad6c304896e5a12d0c08a602eb59/virtualenv-20.33.0-py3-none-any.whl", hash = "sha256:106b6baa8ab1b526d5a9b71165c85c456fbd49b16976c88e2bc9352ee3bc5d3f", size = 6060205, upload-time = "2025-08-03T08:09:16.674Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/ff/ded57ac5ff40a09e6e198550bab075d780941e0b0f83cbeabd087c59383a/virtualenv-20.33.1-py3-none-any.whl", hash = "sha256:07c19bc66c11acab6a5958b815cbcee30891cd1c2ccf53785a28651a0d8d8a67", size = 6060362, upload-time = "2025-08-05T16:10:52.81Z" },
 ]

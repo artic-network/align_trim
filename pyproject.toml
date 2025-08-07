@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=2.0.2",
-    "primalbedtools>=0.10.0",
+    "primalbedtools>=0.10.1",
     "pysam>=0.23.3",
 ]
 
