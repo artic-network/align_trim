@@ -5,8 +5,6 @@ description = "Stand alone version of ARTIC's fieldbioinfomatics align_trim.py"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "bio>=1.6.2",
-    "clint>=0.5.1",
     "numpy>=2.0.2",
     "primalbedtools",
     "pysam>=0.23.3",
