@@ -30,7 +30,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.0.2" },
-    { name = "primalbedtools", path = "../primalbedtools/dist/primalbedtools-0.10.0-py3-none-any.whl" },
+    { name = "primalbedtools", specifier = ">=0.10.0" },
     { name = "pysam", specifier = ">=0.23.3" },
 ]
 
@@ -367,9 +367,10 @@ wheels = [
 [[package]]
 name = "primalbedtools"
 version = "0.10.0"
-source = { path = "../primalbedtools/dist/primalbedtools-0.10.0-py3-none-any.whl" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/a8/f2fb546a5d3a5225e05b399fe2ada2b6e1d9f83758e2d5330dd738ed5e44/primalbedtools-0.10.0.tar.gz", hash = "sha256:81ad82af9344ecb04f7d81194b4c734d3db15fa2370553e5690da558bd58331e", size = 23645885, upload-time = "2025-08-07T12:01:25.709Z" }
 wheels = [
-    { filename = "primalbedtools-0.10.0-py3-none-any.whl", hash = "sha256:81f16d4e005962531e5ab5d34963a0463d841e5179945928e563f45eab487f00" },
+    { url = "https://files.pythonhosted.org/packages/f9/20/18097dddcd253065eb671aeb8932fa0f9a19630a2e3a568f211b9ec46973/primalbedtools-0.10.0-py3-none-any.whl", hash = "sha256:81f16d4e005962531e5ab5d34963a0463d841e5179945928e563f45eab487f00", size = 20465, upload-time = "2025-08-07T12:01:21.77Z" },
 ]
 
 [[package]]
