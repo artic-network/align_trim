@@ -223,7 +223,7 @@ def trim(segment, primer_pos, end, verbose=False):
 
 
 def handle_segments(
-    segment: pysam.AlignedSegment | tuple[pysam.AlignedSegment, pysam.AlignedSegment],
+    segment: pysam.AlignedSegment,  # Inaccurate type hint for 3.9 compatibility, should be pysam.AlignedSegment | tuple[pysam.AlignedSegment, pysam.AlignedSegment]
     lookup: dict,
     args: argparse.Namespace,
     min_mapq: int,
