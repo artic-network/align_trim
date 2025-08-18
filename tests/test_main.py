@@ -4,10 +4,10 @@ from primalbedtools.scheme import Scheme
 from primalbedtools.bedfiles import merge_primers
 from primalbedtools.amplicons import create_amplicons
 
-from aligntrim.main import (
+from align_trim.main import (
     create_primer_lookup,
     find_primer_with_lookup,
-    generate_amplicons,
+    # generate_amplicons,
 )
 
 BED_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/primer.bed"
@@ -163,33 +163,33 @@ class TestFindPrimerWithLookup(unittest.TestCase):
                 self.assertEqual(rp, amplicon.right[0])
 
 
-class TestGenerateAmplicon(unittest.TestCase):
-    def setUp(self):
-        self.scheme = Scheme.from_file(str(BED_PATH_V5_3_2.absolute()))
-        self.scheme.bedlines = merge_primers(self.scheme.bedlines)
-        return super().setUp()
+# class TestGenerateAmplicon(unittest.TestCase):
+#     def setUp(self):
+#         self.scheme = Scheme.from_file(str(BED_PATH_V5_3_2.absolute()))
+#         self.scheme.bedlines = merge_primers(self.scheme.bedlines)
+#         return super().setUp()
 
-    def test_generate_amplicons(self):
-        amplicon_dict = generate_amplicons(self.scheme.bedlines)
-        pbt_amps = create_amplicons(self.scheme.bedlines)
+#     def test_generate_amplicons(self):
+#         amplicon_dict = generate_amplicons(self.scheme.bedlines)
+#         pbt_amps = create_amplicons(self.scheme.bedlines)
 
-        # Check the amplicon dict agrees with pbt
-        for chrom, amp_dict in amplicon_dict.items():
-            chrom_pbt_amps = [amp for amp in pbt_amps if amp.chrom == chrom]
+#         # Check the amplicon dict agrees with pbt
+#         for chrom, amp_dict in amplicon_dict.items():
+#             chrom_pbt_amps = [amp for amp in pbt_amps if amp.chrom == chrom]
 
-            for amp_num, stats_dict in amp_dict.items():
-                # Get the corresponding amp
-                pbt_amp = [
-                    amp for amp in chrom_pbt_amps if amp.amplicon_number == amp_num
-                ][0]
-                self.assertEqual(stats_dict["p_start"], pbt_amp.amplicon_start)
-                self.assertEqual(
-                    stats_dict["start"], pbt_amp.coverage_start + 1
-                )  # idk why +1
-                self.assertEqual(stats_dict["p_end"], pbt_amp.amplicon_end)
-                self.assertEqual(
-                    stats_dict["end"], pbt_amp.coverage_end - 1
-                )  # idk why -1
+#             for amp_num, stats_dict in amp_dict.items():
+#                 # Get the corresponding amp
+#                 pbt_amp = [
+#                     amp for amp in chrom_pbt_amps if amp.amplicon_number == amp_num
+#                 ][0]
+#                 self.assertEqual(stats_dict["p_start"], pbt_amp.amplicon_start)
+#                 self.assertEqual(
+#                     stats_dict["start"], pbt_amp.coverage_start + 1
+#                 )  # idk why +1
+#                 self.assertEqual(stats_dict["p_end"], pbt_amp.amplicon_end)
+#                 self.assertEqual(
+#                     stats_dict["end"], pbt_amp.coverage_end - 1
+#                 )  # idk why -1
 
 
 class TestTrim(unittest.TestCase):

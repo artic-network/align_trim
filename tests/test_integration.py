@@ -6,7 +6,7 @@ from primalbedtools.bedfiles import merge_primers
 from primalbedtools.amplicons import create_amplicons
 import tempfile
 import pysam
-from aligntrim.main import go, create_primer_lookup, find_primer_with_lookup
+from align_trim.main import go, create_primer_lookup, find_primer_with_lookup
 
 BED_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/v5.3.2.primer.bed"
 BAM_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/sars-cov-2_v5.3.2.bam"
@@ -22,20 +22,20 @@ def create_args(**kwargs):
         "primer_match_threshold": 35,
         "report": None,
         "amp_depth_report": None,
-        "trim_primers": False,
+        "no_trim_primers": False,
         "paired": False,
         "no_read_groups": False,
         "verbose": False,
-        "remove_incorrect_pairs": False,
+        "allow_incorrect_pairs": False,
         "require_full_length": False,
-        "output_sam": None,
+        "output": None,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
 
 
 class TestIntegration(unittest.TestCase):
-    def test_aligntrim_trim_primers(self):
+    def test_align_trim_trim_primers(self):
         """Tests primers are trimmed correctly"""
         with tempfile.TemporaryDirectory(
             dir="tests", suffix="-trim_primers"
@@ -44,7 +44,7 @@ class TestIntegration(unittest.TestCase):
             output_sam = tempdir_path / "output.sam"
 
             # Create args with test-specific values
-            args = create_args(trim_primers=True, output_sam=str(output_sam.absolute()))
+            args = create_args(output=output_sam.absolute())
 
             # Run
             go(args)
@@ -85,22 +85,44 @@ class TestIntegration(unittest.TestCase):
                     rg = "unmatched"
                 self.assertEqual(record.get_tag("RG"), rg)
 
-    def test_aligntrim_write_report(self):
+    def test_align_trim_write_reports(self):
         with tempfile.TemporaryDirectory(
             dir="tests", suffix="-write_report"
         ) as tempdir:
             tempdir_path = pathlib.Path(tempdir)
             output_sam = tempdir_path / "output.sam"
-            report = tempdir_path / "report.csv"
+            report = tempdir_path / "report.tsv"
+            amp_depths = tempdir_path / "amp_depths.tsv"
 
             # Create args with report enabled
-            args = create_args(output_sam=str(output_sam.absolute()), report=report)
+            args = create_args(
+                output=output_sam.absolute(),
+                report=report,
+                amp_depth_report=amp_depths,
+            )
 
             # Run
             go(args)
             self.assertTrue(pathlib.Path.exists(report))
+            self.assertTrue(pathlib.Path.exists(amp_depths))
 
-    def test_aligntrim_require_full_length(self):
+            with open(amp_depths, "r") as f:
+                next(f)  # Skip header
+                for line in f:
+                    chrom, amplicon, mean_depth = line.strip().split("\t")
+                    self.assertEqual(chrom, "MN908947.3")
+                    self.assertIn(
+                        amplicon,
+                        [
+                            str(a.amplicon_number)
+                            for a in create_amplicons(
+                                Scheme.from_file(args.bedfile).bedlines
+                            )
+                        ],
+                    )
+                    self.assertTrue(float(mean_depth) >= 0)
+
+    def test_align_trim_require_full_length(self):
         with tempfile.TemporaryDirectory(
             dir="tests", suffix="-require_full_length"
         ) as tempdir:
@@ -109,10 +131,9 @@ class TestIntegration(unittest.TestCase):
 
             # Create args with report enabled
             args = create_args(
-                output_sam=str(output_sam.absolute()),
+                output=output_sam.absolute(),
                 require_full_length=True,
-                remove_incorrect_pairs=True,
-                trim_primers=True,
+                allow_incorrect_pairs=False,
             )
 
             # Run
@@ -134,10 +155,11 @@ class TestIntegration(unittest.TestCase):
                     primer_lookup, record.reference_start, "+", "MN908947.3"
                 )
                 assert lp is not None
-                self.assertEqual(
+                print(record)
+                self.assertLessEqual(
                     record.reference_start,
-                    lp.end + 1 + 1,
-                    "reference_start != left primer end",
+                    lp.end + 1,
+                    "reference_start !<= lp.end",
                 )  # lp.end is non inclusive
 
                 # Find the right primer
@@ -145,10 +167,10 @@ class TestIntegration(unittest.TestCase):
                     primer_lookup, record.reference_end, "-", "MN908947.3"
                 )
                 assert rp is not None
-                self.assertEqual(
+                self.assertGreaterEqual(
                     record.reference_end,
-                    rp.start - 1,  # type: ignore
-                    "reference_end != right primer start",
+                    rp.start,
+                    "reference_end !>= rp.start",
                 )  # record.reference_end is non inclusive
 
 

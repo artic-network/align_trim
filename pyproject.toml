@@ -1,5 +1,5 @@
 [project]
-name = "aligntrim"
+name = "align_trim"
 version = "0.1.0"
 description = "Stand alone version of ARTIC's fieldbioinfomatics align_trim.py"
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-aligntrim = "aligntrim.main:main"
+align_trim = "align_trim.main:main"
 
 [build-system]
 requires = ["hatchling"]

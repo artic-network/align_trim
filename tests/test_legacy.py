@@ -4,7 +4,7 @@ from primalbedtools.scheme import Scheme
 from primalbedtools.bedfiles import BedLine
 import pysam
 
-from aligntrim.main import find_primer, trim
+from align_trim.main import find_primer, trim
 
 BED_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/primer.bed"
 BED_PATH_V1_0_0 = pathlib.Path(__file__).parent / "test_data/v1.0.0.primer.bed"
