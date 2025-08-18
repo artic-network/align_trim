@@ -10,7 +10,7 @@ from typing import Optional
 from pathlib import Path
 import itertools
 
-from importlib_metadata import version
+from importlib.metadata import version
 
 from primalbedtools.scheme import Scheme
 from primalbedtools.bedfiles import BedLine, merge_primers
