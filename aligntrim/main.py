@@ -106,7 +106,7 @@ def trim(segment, primer_pos, end, verbose=False):
         The position in the reference to soft mask up to (equates to the start/end position of the primer in the reference)
     end : bool
         If True, the segment is being masked from the end (i.e. for the reverse primer)
-    vernose : bool
+    verbose : bool
         If True, will print soft masking info during trimming
     """
     if verbose:
@@ -913,7 +913,10 @@ def go(args):
     )
 
     # prepare the alignment outfile
-    outfile = pysam.AlignmentFile("-", "wh", header=bam_header)
+    if args.output_sam:
+        outfile = pysam.AlignmentFile(args.output_sam, "wh", header=bam_header)
+    else:
+        outfile = pysam.AlignmentFile("-", "wh", header=bam_header)
 
     amplicons = create_amplicons(scheme.bedlines)
 
@@ -1075,6 +1078,10 @@ def main():
         "--require-full-length",
         action="store_true",
         help="Requires all reads to start and stop in a primer site",
+    )
+    parser.add_argument(
+        "--output-sam",
+        help="Location to write the output sam file to. Leave blank (or '-') to write to stdout",
     )
 
     args = parser.parse_args()
