@@ -370,11 +370,20 @@ def handle_segments(
     # TODO: will try improving this / moving it to the primer scheme processing code
     correctly_paired = p1.amplicon_number == p2.amplicon_number
 
-    if not args.no_read_groups:
-        if correctly_paired:
-            segment.set_tag("RG", str(p1.pool))
-        else:
-            segment.set_tag("RG", "unmatched")
+    if not paired:
+        if not args.no_read_groups:
+            if correctly_paired:
+                segment.set_tag("RG", str(p1.pool))
+            else:
+                segment.set_tag("RG", "unmatched")
+    else:
+        if not args.no_read_groups:
+            if correctly_paired:
+                segment1.set_tag("RG", str(p1.pool))
+                segment2.set_tag("RG", str(p2.pool))
+            else:
+                segment1.set_tag("RG", "unmatched")
+                segment2.set_tag("RG", "unmatched")
 
     # get the amplicon number
     amplicon = p1.amplicon_number
@@ -585,6 +594,7 @@ def handle_segments(
             amp_depths[segment2.reference_name][amplicon][
                 segment2_amp_relative_start:segment2_amp_relative_end
             ] += 1
+
             return (amplicon, False)
 
     return (amplicon, segment)
@@ -618,7 +628,10 @@ def normalise(
         amplicons.setdefault(amplicon.chrom, {})
         amplicons[amplicon.chrom].setdefault(
             amplicon.amplicon_number,
-            {"length": amplicon.length, "p_start": amplicon.amplicon_start},
+            {
+                "length": amplicon.amplicon_end - amplicon.amplicon_start,
+                "p_start": amplicon.amplicon_start,
+            },
         )
 
     # mean_depths = {x: {} for x in amplicons}
@@ -876,7 +889,7 @@ def go(args):
         for segments in read_pairs:
             if args.report:
                 trimming_tuple = handle_segments(
-                    segments=segments,  # type: ignore
+                    segment=segments,  # type: ignore
                     lookup=primer_lookup,
                     args=args,
                     report_writer=report_writer,  # type: ignore
@@ -886,7 +899,7 @@ def go(args):
                 )
             else:
                 trimming_tuple = handle_segments(
-                    segments=segments,  # type: ignore
+                    segment=segments,  # type: ignore
                     lookup=primer_lookup,
                     args=args,
                     min_mapq=args.min_mapq,
@@ -913,16 +926,18 @@ def go(args):
 
         # normalise if requested and write normalised segments to outfile
         if args.normalise:
-            output_segments, mean_amp_depths = normalise(
+            mean_amp_depths = normalise(
                 trimmed_segments=trimmed_segments,
                 normalise=args.normalise,
                 primers=scheme.bedlines,
                 outfile=outfile,
                 verbose=args.verbose,
             )
-
-            for output_segment in output_segments:
-                outfile.write(output_segment)
+        else:
+            mean_amp_depths = {}
+            for chrom, chrom_amps in amp_depths.items():
+                for amplicon, depths in chrom_amps.items():
+                    mean_amp_depths[(chrom, amplicon)] = np.mean(depths)
 
         # write mean amplicon depths to file
         if args.amp_depth_report:
@@ -981,7 +996,7 @@ def go(args):
 
         # normalise if requested
         if args.normalise:
-            output_segments, mean_amp_depths = normalise(
+            mean_amp_depths = normalise(
                 trimmed_segments=trimmed_segments,
                 normalise=args.normalise,
                 primers=scheme.bedlines,
@@ -989,8 +1004,6 @@ def go(args):
                 verbose=args.verbose,
             )
 
-            for output_segment in output_segments:
-                outfile.write(output_segment)
         else:
             mean_amp_depths = {}
             for chrom, chrom_amps in amp_depths.items():

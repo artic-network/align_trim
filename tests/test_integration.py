@@ -10,6 +10,10 @@ from align_trim.main import go, create_primer_lookup, find_primer_with_lookup
 
 BED_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/v5.3.2.primer.bed"
 BAM_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/sars-cov-2_v5.3.2.bam"
+BED_PATH_V3_0_0 = pathlib.Path(__file__).parent / "test_data/v3.0.0.primer.bed"
+BAM_PATH_PAIRED_V3_0_0 = (
+    pathlib.Path(__file__).parent / "test_data/sars-cov-2_v3.0.0_paired.bam"
+)
 
 
 def create_args(**kwargs):
@@ -120,7 +124,7 @@ class TestIntegration(unittest.TestCase):
                             )
                         ],
                     )
-                    self.assertTrue(float(mean_depth) >= 0)
+                    self.assertTrue(float(mean_depth) > 0)
 
     def test_align_trim_require_full_length(self):
         with tempfile.TemporaryDirectory(
@@ -172,6 +176,50 @@ class TestIntegration(unittest.TestCase):
                     rp.start,
                     "reference_end !>= rp.start",
                 )  # record.reference_end is non inclusive
+
+    def test_align_trim_paired(self):
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-paired") as tempdir:
+            tempdir_path = pathlib.Path(tempdir)
+            output_bam = tempdir_path / "output.bam"
+            amp_depths = tempdir_path / "amp_depths.tsv"
+
+            # Create args with report enabled
+            args = create_args(
+                output=output_bam.absolute(),
+                allow_incorrect_pairs=False,
+                amp_depth_report=amp_depths,
+                bedfile=BED_PATH_V3_0_0.absolute(),
+                bamfile=BAM_PATH_PAIRED_V3_0_0.absolute(),
+                normalise=200,
+            )
+
+            # Run
+            go(args)
+
+            # Read in scheme, create look ups
+            scheme = Scheme.from_file(args.bedfile)
+            scheme.bedlines = merge_primers(scheme.bedlines)
+
+            zero_depth_amps = [15, 29]
+
+            with open(amp_depths, "r") as f:
+                next(f)  # Skip header
+                for line in f:
+                    chrom, amplicon, mean_depth = line.strip().split("\t")
+                    self.assertEqual(chrom, "MN908947.3")
+                    self.assertIn(
+                        amplicon,
+                        [
+                            str(a.amplicon_number)
+                            for a in create_amplicons(
+                                Scheme.from_file(args.bedfile).bedlines
+                            )
+                        ],
+                    )
+                    if int(amplicon) in zero_depth_amps:
+                        self.assertEqual(float(mean_depth), 0.0)
+                    else:
+                        self.assertTrue(float(mean_depth) > 0)
 
 
 if __name__ == "__main__":
