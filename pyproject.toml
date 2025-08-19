@@ -1,7 +1,17 @@
 [project]
 name = "align_trim"
 version = "0.1.0"
-description = "Stand alone version of ARTIC's fieldbioinfomatics align_trim.py"
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+description = "Soft-clip primer sites for SAM/BAM files generated from amplicon sequencing runs"
+authors = [
+    { name = "Nick Loman", email = "n.j.loman@bham.ac.uk" },
+]
+maintainers = [
+    { name = "Sam Wilkinson", email = "s.a.j.wilkinson@bham.ac.uk" },
+    { name = "Chris Kent", email = "c.g.kent@bham.ac.uk" },
+]
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -9,6 +19,10 @@ dependencies = [
     "primalbedtools>=0.10.1",
     "pysam>=0.23.3",
 ]
+
+[project.urls]
+Repository = "https://github.com/artic-network/align_trim.git"
+Issues = "https://github.com/artic-network/align_trim/issues"
 
 [project.scripts]
 align_trim = "align_trim.main:main"
@@ -19,6 +33,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "coverage",
     "pre-commit>=3.7.1,<4",
     "pytest>=8.3.5,<9",
     "ruff>=0.12",
