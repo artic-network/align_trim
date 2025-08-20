@@ -7,6 +7,8 @@ license-files = ["LICEN[CS]E*"]
 description = "Soft-clip primer sites for SAM/BAM files generated from amplicon sequencing runs"
 authors = [
     { name = "Nick Loman", email = "n.j.loman@bham.ac.uk" },
+    { name = "Sam Wilkinson", email = "s.a.j.wilkinson@bham.ac.uk" },
+    { name = "Chris Kent", email = "c.g.kent@bham.ac.uk" },    
 ]
 maintainers = [
     { name = "Sam Wilkinson", email = "s.a.j.wilkinson@bham.ac.uk" },
