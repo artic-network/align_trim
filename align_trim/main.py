@@ -1044,7 +1044,7 @@ def main():
     )
     parser.add_argument(
         "--samfile",
-        "-i",
+        "-s",
         help="Sorted SAM/BAM file containing the aligned reads, if this is not provided (or '-') then 'align_trim' will read from stdin.",
         required=False,
     )
