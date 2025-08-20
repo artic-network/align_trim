@@ -57,7 +57,7 @@ The tool reads alignment data from either a SAM file or stdin and outputs trimme
 
 - `--report`, `-r` : Output detailed report TSV to specified filepath
 - `--amp-depth-report`, `-a` : Output mean depth for each amplicon as TSV to specified filepath
-- `--no-read-groups` : Do not divide reads into pool-based read groups in SAM output
+- `--no-read-groups` : Do not divide reads into pool-based read groups in SAM/BAM output
 
 #### General Options
 
