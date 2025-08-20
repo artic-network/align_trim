@@ -38,7 +38,7 @@ The tool reads alignment data from either a SAM file or stdin and outputs trimme
 
 #### Input/Output Options
 
-- `--bamfile`, `-b` : Sorted BAM file containing aligned reads. If not provided or '-', reads from stdin
+- `--samfile`, `-s` : Sorted SAM/BAM file containing the aligned reads, if this is not provided (or '-') then 'align_trim' will read from stdin.
 - `--output`, `-o` : Output file path. Format determined by extension (.sam/.bam). If not provided or '-', writes SAM to stdout
 
 #### Processing Options
