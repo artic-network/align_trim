@@ -2,7 +2,7 @@ name: pytest
 on:
   push:
     paths:
-      - "aligntrim/**"
+      - "align_trim/**"
       - "tests/**"
       - "pyproject.toml"
       - "uv.lock"

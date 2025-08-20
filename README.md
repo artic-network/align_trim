@@ -1,4 +1,4 @@
-# AlignTrim
+# align_trim
 
 Stand alone version of ARTIC's fieldbioinfomatics align_trim.py
 
@@ -29,5 +29,5 @@ Currently under development !
 ## Installation  
 ```bash
 uv sync 
-uv run aligntrim --help
+uv run align_trim --help
 ```
