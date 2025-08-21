@@ -748,11 +748,11 @@ def read_pair_generator(bam, region_string=None):
 
 def create_primer_lookup(ref_len_tuple, pools, amplicons: list[Amplicon], padding=35):
     """
-    Returns a dict of chroms, each containing a (max(pools), chrom_len) shaped array
+    Returns a dict of chroms, each containing a (N, chrom_len) shaped array
     """
     lookups = {}
     for chrom, chromlen in ref_len_tuple:
-        a = np.empty_like(None, shape=(max(pools), chromlen + 1))
+        a = np.empty_like(None, shape=(1, chromlen + 1))
         for amp in amplicons:
             added = False
             if amp.chrom == chrom:
@@ -900,7 +900,10 @@ def go(args):
     # Create a lookup table for primer location
     ref_lengths = [(r, infile.get_reference_length(r)) for r in infile.references]
     primer_lookup = create_primer_lookup(
-        ref_len_tuple=ref_lengths, pools=pools, amplicons=amplicon_list, padding=35
+        ref_len_tuple=ref_lengths,
+        pools=pools,
+        amplicons=amplicon_list,
+        padding=args.primer_match_threshold,
     )
 
     trimmed_segments = {x: {} for x in chroms}
@@ -1088,8 +1091,8 @@ def main():
         "--primer-match-threshold",
         "-p",
         type=int,
-        default=35,
-        help="Fuzzy match primer positions within this threshold",
+        default=15,
+        help="Add -p bases of padding to the outside (5' end) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
     )
     parser.add_argument(
         "--report", "-r", type=Path, help="Output report TSV to filepath"
