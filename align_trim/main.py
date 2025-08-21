@@ -182,7 +182,7 @@ def trim(segment, primer_pos, end, verbose=False):
 
     # softmask the left primer
     if not end:
-        # update the position of the leftmost mappinng base
+        # update the position of the leftmost mapping base
         segment.pos = pos - extra
         if verbose:
             print(
@@ -342,19 +342,34 @@ def handle_segments(
         )
     else:
         # locate the nearest primers to this alignment segment pair
-        p1 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment1.reference_start,
-            direction="+",
-            chrom=segment1.reference_name,
-        )
-
-        p2 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment2.reference_end,
-            direction="-",
-            chrom=segment2.reference_name,
-        )
+        if segment1.reference_start < segment2.reference_start:
+            # if segment1 starts before segment2, then segment1 is the left segment relative to the reference
+            p1 = find_primer_with_lookup(
+                lookup=lookup,
+                pos=segment1.reference_start,
+                direction="+",
+                chrom=segment1.reference_name,
+            )
+            p2 = find_primer_with_lookup(
+                lookup=lookup,
+                pos=segment2.reference_end,
+                direction="-",
+                chrom=segment2.reference_name,
+            )
+        else:
+            # otherwise then segment2 is the left segment relative to the reference
+            p1 = find_primer_with_lookup(
+                lookup=lookup,
+                pos=segment2.reference_start,
+                direction="+",
+                chrom=segment2.reference_name,
+            )
+            p2 = find_primer_with_lookup(
+                lookup=lookup,
+                pos=segment1.reference_end,
+                direction="-",
+                chrom=segment1.reference_name,
+            )
 
     if not p1 or not p2:
         segment = segment1 if segment1 else segment2
@@ -366,8 +381,6 @@ def handle_segments(
         return False
 
     # check if primers are correctly paired and then assign read group
-    # NOTE: removed this as a function as only called once
-    # TODO: will try improving this / moving it to the primer scheme processing code
     correctly_paired = p1.amplicon_number == p2.amplicon_number
 
     if not paired:
@@ -469,15 +482,14 @@ def handle_segments(
             return False
 
         # Check require-full-length
-        if not paired:
-            if args.require_full_length:
-                if segment.reference_start > p1.end or segment.reference_end < p2.start:
-                    if args.verbose:
-                        print(
-                            f"{segment.query_name}: ref_start {segment.reference_start} > p1.end {p1.end} or ref_end {segment.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
-                            file=sys.stderr,
-                        )
-                    return False
+        if args.require_full_length:
+            if segment.reference_start > p1.end or segment.reference_end < p2.start:
+                if args.verbose:
+                    print(
+                        f"{segment.query_name}: ref_start {segment.reference_start} > p1.end {p1.end} or ref_end {segment.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
+                        file=sys.stderr,
+                    )
+                return False
 
         # If not normalising, write the segment to the output file and add it to amplicon depth numpy array
         if not args.normalise:
@@ -496,65 +508,46 @@ def handle_segments(
         return (amplicon, segment)
 
     else:
-        if segment1.reference_start < p1_position:
-            try:
-                trim(segment1, p1_position, False, args.verbose)
-                if args.verbose:
+        for segment_of_pair in (segment1, segment2):
+            if segment_of_pair.reference_start < p1_position:
+                try:
+                    trim(
+                        segment=segment_of_pair,
+                        primer_pos=p1_position,
+                        end=False,
+                        verbose=args.verbose,
+                    )
+                    if args.verbose:
+                        print(
+                            f"{segment_of_pair.query_name}: ref start {segment_of_pair.reference_start} >= primer_position {p1_position}",
+                            file=sys.stderr,
+                        )
+                except Exception as e:
                     print(
-                        f"{segment1.query_name}: ref start {segment1.reference_start} >= primer_position {p1_position}",
+                        f"{segment_of_pair.query_name}: Problem soft masking left primer (error: {e}), skipping",
                         file=sys.stderr,
                     )
-            except Exception as e:
-                print(
-                    f"{segment1.query_name}: Problem soft masking left primer (error: {e}), skipping",
-                    file=sys.stderr,
-                )
-                return False
+                    return False
 
-        elif segment1.reference_end > p2_position:  # type: ignore
-            try:
-                trim(segment1, p2_position, True, args.verbose)
-                if args.verbose:
+            if segment_of_pair.reference_end > p2_position:  # type: ignore
+                try:
+                    trim(
+                        segment=segment_of_pair,
+                        primer_pos=p2_position,
+                        end=True,
+                        verbose=args.verbose,
+                    )
+                    if args.verbose:
+                        print(
+                            f"{segment_of_pair.query_name}: ref_end {segment_of_pair.reference_end} >= primer_position {p2_position}",
+                            file=sys.stderr,
+                        )
+                except Exception as e:
                     print(
-                        f"{segment1.query_name}: ref_end {segment1.reference_end} >= primer_position {p2_position}",
+                        f"{segment_of_pair.query_name}: Problem soft masking right primer (error: {e}), skipping",
                         file=sys.stderr,
                     )
-            except Exception as e:
-                print(
-                    f"{segment1.query_name}: Problem soft masking right primer (error: {e}), skipping",
-                    file=sys.stderr,
-                )
-                return False
-
-        # softmask the alignment if right primer start/end inside alignment
-        if segment2.reference_end > p2_position:  # type: ignore
-            try:
-                trim(segment2, p2_position, True, args.verbose)
-                if args.verbose:
-                    print(
-                        f"{segment1.query_name}: ref_start {segment2.reference_start} >= primer_position {p2_position}",
-                        file=sys.stderr,
-                    )
-            except Exception as e:
-                print(
-                    f"{segment1.query_name}: Problem soft masking right primer (error: {e}), skipping",
-                    file=sys.stderr,
-                )
-                return False
-        elif segment2.reference_start < p1_position:
-            try:
-                trim(segment2, p1_position, False, args.verbose)
-                if args.verbose:
-                    print(
-                        f"{segment1.query_name}: ref_end {segment2.reference_end} >= primer_position {p1_position}",
-                        file=sys.stderr,
-                    )
-            except Exception as e:
-                print(
-                    f"{segment1.query_name}: Problem soft masking left primer (error: {e}), skipping",
-                    file=sys.stderr,
-                )
-                return False
+                    return False
 
         # check the the alignment still contains bases matching the reference
         if "M" not in segment1.cigarstring or "M" not in segment2.cigarstring:  # type: ignore
@@ -566,33 +559,40 @@ def handle_segments(
             return False
 
         if args.require_full_length:
-            if segment1.reference_start > p1.end or segment2.reference_end < p2.start:
-                if args.verbose:
-                    print(
-                        f"{segment1.query_name}: ref_start {segment1.reference_start} > p1.end {p1.end} or ref_end {segment2.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
-                        file=sys.stderr,
-                    )
-                return False
+            if segment1.reference_start < segment2.reference_start:
+                if (
+                    segment1.reference_start > p1.end
+                    or segment2.reference_end < p2.start
+                ):
+                    if args.verbose:
+                        print(
+                            f"{segment1.query_name}: ref_start {segment1.reference_start} > p1.end {p1.end} or ref_end {segment2.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
+                            file=sys.stderr,
+                        )
+                    return False
+            else:
+                if (
+                    segment2.reference_start > p1.end
+                    or segment1.reference_end < p2.start
+                ):
+                    if args.verbose:
+                        print(
+                            f"{segment1.query_name}: ref_end {segment1.reference_end} < p2.start {p2.start} or ref_start {segment2.reference_start} > p1.end {p1.end}, does not span a full amplicon, skipping",
+                            file=sys.stderr,
+                        )
+                    return False
 
         # If not normalising, write the segments to the output file and add them to amplicon depth numpy array
         if not args.normalise:
             outfile_writer.write(segment1)
             outfile_writer.write(segment2)
-            segment1_amp_relative_start = segment1.reference_start - p1.start
-            segment1_amp_relative_end = segment1.reference_end - p1.start
-            if segment1_amp_relative_start < 0:
-                segment1_amp_relative_start = 0
-
-            segment2_amp_relative_start = segment2.reference_start - p1.start
-            segment2_amp_relative_end = segment2.reference_end - p1.start
-            if segment2_amp_relative_start < 0:
-                segment2_amp_relative_start = 0
-
+            for segment_in_pair in (segment1, segment2):
+                segment_amp_relative_start = segment_in_pair.reference_start - p1.start
+                segment_amp_relative_end = segment_in_pair.reference_end - p1.start
+                if segment_amp_relative_start < 0:
+                    segment_amp_relative_start = 0
             amp_depths[segment1.reference_name][amplicon][
-                segment1_amp_relative_start:segment1_amp_relative_end
-            ] += 1
-            amp_depths[segment2.reference_name][amplicon][
-                segment2_amp_relative_start:segment2_amp_relative_end
+                segment_amp_relative_start:segment_amp_relative_end
             ] += 1
 
             return (amplicon, False)
@@ -813,8 +813,8 @@ def go(args):
     pools_str.add("unmatched")
 
     # open the input samfile and process read groups
-    if args.bamfile and args.bamfile != "-":
-        infile = pysam.AlignmentFile(args.bamfile, "rb")
+    if args.samfile and args.samfile != "-":
+        infile = pysam.AlignmentFile(args.samfile, "rb")
     else:
         infile = pysam.AlignmentFile("-", "rb")
 
@@ -1034,7 +1034,7 @@ def go(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Trim alignments from an amplicon scheme. Bam (input) can be provided by --bamfile or stdin"
+        description="Trim alignments from an amplicon scheme. Bam (input) can be provided by --samfile or stdin"
     )
     parser.add_argument(
         "bedfile",
@@ -1043,9 +1043,9 @@ def main():
         metavar="BEDFILE",
     )
     parser.add_argument(
-        "--bamfile",
-        "-b",
-        help="Sorted BAM file containing the aligned reads, if this is not provided (or '-') then 'align_trim' will read from stdin.",
+        "--samfile",
+        "-s",
+        help="Sorted SAM/BAM file containing the aligned reads, if this is not provided (or '-') then 'align_trim' will read from stdin.",
         required=False,
     )
     parser.add_argument(
