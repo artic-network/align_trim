@@ -577,7 +577,7 @@ def handle_segments(
                 ):
                     if args.verbose:
                         print(
-                            f"{segment1.query_name}: ref_end {segment1.reference_end} < p1.start {p1.start} or ref_start {segment2.reference_start} > p2.end {p2.end}, does not span a full amplicon, skipping",
+                            f"{segment1.query_name}: ref_end {segment1.reference_end} < p2.start {p2.start} or ref_start {segment2.reference_start} > p1.end {p1.end}, does not span a full amplicon, skipping",
                             file=sys.stderr,
                         )
                     return False
