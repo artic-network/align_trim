@@ -117,7 +117,7 @@ class TestIntegration(unittest.TestCase):
     def test_align_trim_trim_se_norm(self):
         """Tests primers are trimmed correctly"""
         with tempfile.TemporaryDirectory(
-            dir="tests", suffix="-trim_primers_se_no_norm"
+            dir="tests", suffix="-trim_primers_se_norm"
         ) as tempdir:
             tempdir_path = pathlib.Path(tempdir)
             output_sam = tempdir_path / "output.sam"
