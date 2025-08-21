@@ -32,7 +32,7 @@ class TestCreatePrimerLookup(unittest.TestCase):
         """
         Test that the primer lookup is created correctly
         """
-        # Create the primer lookup with 35 padding
+        # Create the primer lookup with 0 padding
         padding = 0
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
@@ -51,38 +51,35 @@ class TestCreatePrimerLookup(unittest.TestCase):
         # Check the size of the primer lookup
         self.assertEqual(
             primer_lookup["MN908947.3"].shape,
-            (max(self.pools), 29903 + 1),  # +1 for half open interval
+            (2, 29903 + 1),  # +1 for half open interval
         )
 
         # Check each amplicon is present in the lookup and in correct pool
         for amplicon in self.amplicons:
-            # Check amplicon spans correct region, and correct pool
-            self.assertEqual(
-                set(
-                    primer_lookup[amplicon.chrom][
-                        amplicon.ipool, amplicon.amplicon_start : amplicon.amplicon_end
-                    ]
-                ),
-                set([amplicon]),
-            )
+            contents = []
+            for row in primer_lookup[amplicon.chrom][
+                :, amplicon.amplicon_start - padding : amplicon.amplicon_end + padding
+            ]:
+                contents.append(set(row))
+            self.assertIn(set([amplicon]), contents)
+
             # Check padding is aligned correctly
-            self.assertIsNone(
-                primer_lookup[amplicon.chrom][
-                    amplicon.ipool, amplicon.amplicon_start - padding - 1
-                ]
-            )
-            self.assertIsNone(
-                primer_lookup[amplicon.chrom][
-                    amplicon.ipool, amplicon.amplicon_end + padding  # -1 +1
-                ]
-            )
+            for row in primer_lookup[amplicon.chrom][
+                :, amplicon.amplicon_start - padding - 1
+            ]:
+                self.assertIsNot(row, amplicon)
+
+            for row in primer_lookup[amplicon.chrom][
+                :, amplicon.amplicon_end + padding  # +1 -1
+            ]:
+                self.assertIsNot(row, amplicon)
 
     def test_create_primer_lookup_padding(self):
         """
         Test that the primer lookup is created correctly
         """
         # Create the primer lookup with 35 padding
-        padding = 10
+        padding = 35
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=self.amplicons,
@@ -100,31 +97,83 @@ class TestCreatePrimerLookup(unittest.TestCase):
         # Check the size of the primer lookup
         self.assertEqual(
             primer_lookup["MN908947.3"].shape,
-            (max(self.pools), 29903 + 1),  # +1 for half open interval
+            (2, 29903 + 1),  # +1 for half open interval
         )
 
-        # Check each amplicon is present in the lookup and in correct pool
+        # Check each amplicon is present in the lookup
         for amplicon in self.amplicons:
-            # Check amplicon spans correct region, and correct pool
-            self.assertEqual(
-                set(
-                    primer_lookup[amplicon.chrom][
-                        amplicon.ipool, amplicon.amplicon_start : amplicon.amplicon_end
-                    ]
+            # Check amplicon spans correct region
+            contents = []
+            for row in primer_lookup[amplicon.chrom][
+                :,
+                max(0, amplicon.amplicon_start - padding) : min(
+                    amplicon.amplicon_end + padding, 29903 + 1
                 ),
-                set([amplicon]),
-            )
+            ]:
+                contents.append(set(row))
+            self.assertIn(set([amplicon]), contents)
+
             # Check padding is aligned correctly
-            self.assertIsNone(
-                primer_lookup[amplicon.chrom][
-                    amplicon.ipool, amplicon.amplicon_start - padding - 1
-                ]
-            )
-            self.assertIsNone(
-                primer_lookup[amplicon.chrom][
-                    amplicon.ipool, amplicon.amplicon_end + padding  # -1 +1
-                ]
-            )
+            for row in primer_lookup[amplicon.chrom][
+                :, amplicon.amplicon_start - padding - 1
+            ]:
+                self.assertIsNot(row, amplicon)
+
+            for row in primer_lookup[amplicon.chrom][
+                :, amplicon.amplicon_end + padding  # +1 -1
+            ]:
+                self.assertIsNot(row, amplicon)
+
+    def test_create_primer_lookup_no_overlap(self):
+        """
+        Test that the primer lookup is created correctly
+        """
+        # Create the primer lookup with a single amplicon
+        padding = 0
+        primer_lookup = create_primer_lookup(
+            ref_len_tuple=self.ref_len,
+            amplicons=[self.amplicons[0]],
+            pools=self.pools,
+            padding=padding,
+        )
+
+        # Check the size of the primer lookup
+        self.assertEqual(
+            primer_lookup["MN908947.3"].shape,
+            (1, 29903 + 1),  # +1 for half open interval
+        )
+
+    def test_create_primer_lookup_overlap(self):
+        """
+        Test that the primer lookup is created correctly
+        """
+        # Create some fake amplicon
+        # 	nCoV-2019_3 overlaps with nCoV-2019_1
+        scheme = Scheme.from_str(
+            "MN908947.3	30	54	nCoV-2019_1_LEFT_1	1	+	ACCAACCAACTTTCGATCTCTTGT\n"
+            "MN908947.3	385	410	nCoV-2019_1_RIGHT_1	1	-	CATCTTTAAGATGTTGACGTGCCTC\n"
+            "MN908947.3	320	342	nCoV-2019_2_LEFT_1	2	+	CTGTTTTACAGGTTCGCGACGT\n"
+            "MN908947.3	704	726	nCoV-2019_2_RIGHT_1	2	-	TAAGGATCAGTGCCAAGCTCGT\n"
+            "MN908947.3	385	400	nCoV-2019_3_LEFT_1	1	+	CGGTAATAAAGGAGCTGGTGGC\n"
+            "MN908947.3	800	820	nCoV-2019_3_RIGHT_1	1	-	AAGGTGTCTGCAATTCATAGCTCT\n"
+        )
+        scheme.bedlines = merge_primers(scheme.bedlines)
+        amplicons = create_amplicons(scheme.bedlines)
+
+        # Create the primer lookup with a single amplicon
+        padding = 0
+        primer_lookup = create_primer_lookup(
+            ref_len_tuple=self.ref_len,
+            amplicons=amplicons,
+            pools=self.pools,
+            padding=padding,
+        )
+
+        # Check the size of the primer lookup
+        self.assertEqual(
+            primer_lookup["MN908947.3"].shape,
+            (3, 29903 + 1),  # +1 for half open interval
+        )
 
 
 class TestFindPrimerWithLookup(unittest.TestCase):

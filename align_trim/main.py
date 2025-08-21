@@ -748,19 +748,41 @@ def read_pair_generator(bam, region_string=None):
 
 def create_primer_lookup(ref_len_tuple, pools, amplicons: list[Amplicon], padding=35):
     """
-    Returns a dict of chroms, each containing a (max(pools), chrom_len) shaped array
+    Returns a dict of chroms, each containing a (N, chrom_len) shaped array
     """
     lookups = {}
     for chrom, chromlen in ref_len_tuple:
-        a = np.empty_like(None, shape=(max(pools), chromlen + 1))
+        a = np.empty_like(None, shape=(1, chromlen + 1))
         for amp in amplicons:
+            added = False
             if amp.chrom == chrom:
-                a[
-                    amp.ipool,
+                # If amplicon clashes with any in same pool add new row
+                amp_slice = a[
+                    :,
                     max(amp.amplicon_start - padding, 0) : min(
                         amp.amplicon_end + padding, chromlen
                     ),
-                ] = amp
+                ]
+                for i, row in enumerate(amp_slice):  # Check each row for collision
+                    if row[row != None].size == 0:
+                        a[
+                            i,
+                            max(amp.amplicon_start - padding, 0) : min(
+                                amp.amplicon_end + padding, chromlen
+                            ),
+                        ] = amp
+                        added = True
+                # If not added, add new row to array and add to that.
+                if not added:
+                    b = np.empty_like(None, shape=(1, chromlen + 1))
+                    b[
+                        0,
+                        max(amp.amplicon_start - padding, 0) : min(
+                            amp.amplicon_end + padding, chromlen
+                        ),
+                    ] = amp
+                    a = np.vstack((a, b))
+
         lookups[chrom] = a
     return lookups
 
