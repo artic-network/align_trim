@@ -512,10 +512,10 @@ def handle_segments(
             if segment_of_pair.reference_start < p1_position:
                 try:
                     trim(
-                        segment_of_pair,
-                        p1_position,
-                        segment_of_pair.is_reverse,
-                        args.verbose,
+                        segment=segment_of_pair,
+                        primer_pos=p1_position,
+                        end=False,
+                        verbose=args.verbose,
                     )
                     if args.verbose:
                         print(
@@ -532,10 +532,10 @@ def handle_segments(
             if segment_of_pair.reference_end > p2_position:  # type: ignore
                 try:
                     trim(
-                        segment_of_pair,
-                        p2_position,
-                        segment_of_pair.is_reverse,
-                        args.verbose,
+                        segment=segment_of_pair,
+                        primer_pos=p2_position,
+                        end=True,
+                        verbose=args.verbose,
                     )
                     if args.verbose:
                         print(
