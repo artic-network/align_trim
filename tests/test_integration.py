@@ -394,7 +394,7 @@ class TestIntegration(unittest.TestCase):
 
     def test_align_trim_paired_full_length(self):
         with tempfile.TemporaryDirectory(
-            dir="tests", suffix="-paired-no-norm"
+            dir="tests", suffix="-paired-full-length"
         ) as tempdir:
             tempdir_path = pathlib.Path(tempdir)
             output_bam = tempdir_path / "output.bam"
