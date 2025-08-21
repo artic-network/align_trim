@@ -900,7 +900,10 @@ def go(args):
     # Create a lookup table for primer location
     ref_lengths = [(r, infile.get_reference_length(r)) for r in infile.references]
     primer_lookup = create_primer_lookup(
-        ref_len_tuple=ref_lengths, pools=pools, amplicons=amplicon_list, padding=35
+        ref_len_tuple=ref_lengths,
+        pools=pools,
+        amplicons=amplicon_list,
+        padding=args.primer_match_threshold,
     )
 
     trimmed_segments = {x: {} for x in chroms}
@@ -1089,7 +1092,7 @@ def main():
         "-p",
         type=int,
         default=35,
-        help="Fuzzy match primer positions within this threshold",
+        help="Add -p bases of padding to the outside (5' end) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
     )
     parser.add_argument(
         "--report", "-r", type=Path, help="Output report TSV to filepath"
