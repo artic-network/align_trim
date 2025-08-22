@@ -746,7 +746,7 @@ def read_pair_generator(bam, region_string=None):
             del read_dict[qname]
 
 
-def create_primer_lookup(ref_len_tuple, pools, amplicons: list[Amplicon], padding=35):
+def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
     """
     Returns a dict of chroms, each containing a (N, chrom_len) shaped array
     """
