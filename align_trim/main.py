@@ -1092,7 +1092,7 @@ def main():
         "-p",
         type=int,
         default=35,
-        help="Add -p bases of padding to the outside (5' end) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
+        help="Add -p bases of padding to the outside (5' end of primer) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
     )
     parser.add_argument(
         "--report", "-r", type=Path, help="Output report TSV to filepath"
