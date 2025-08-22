@@ -37,7 +37,6 @@ class TestCreatePrimerLookup(unittest.TestCase):
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=self.amplicons,
-            pools=self.pools,
             padding=padding,
         )
         # Check that the primer lookup is a dictionary
@@ -83,7 +82,6 @@ class TestCreatePrimerLookup(unittest.TestCase):
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=self.amplicons,
-            pools=self.pools,
             padding=padding,
         )
         # Check that the primer lookup is a dictionary
@@ -133,7 +131,6 @@ class TestCreatePrimerLookup(unittest.TestCase):
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=[self.amplicons[0]],
-            pools=self.pools,
             padding=padding,
         )
 
@@ -165,7 +162,6 @@ class TestCreatePrimerLookup(unittest.TestCase):
         primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=amplicons,
-            pools=self.pools,
             padding=padding,
         )
 
@@ -188,7 +184,6 @@ class TestFindPrimerWithLookup(unittest.TestCase):
         self.primer_lookup = create_primer_lookup(
             ref_len_tuple=self.ref_len,
             amplicons=self.amplicons,
-            pools=self.pools,
             padding=0,
         )
 

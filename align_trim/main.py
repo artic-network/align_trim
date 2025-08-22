@@ -901,7 +901,6 @@ def go(args):
     ref_lengths = [(r, infile.get_reference_length(r)) for r in infile.references]
     primer_lookup = create_primer_lookup(
         ref_len_tuple=ref_lengths,
-        pools=pools,
         amplicons=amplicon_list,
         padding=args.primer_match_threshold,
     )
