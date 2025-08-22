@@ -746,22 +746,74 @@ def read_pair_generator(bam, region_string=None):
             del read_dict[qname]
 
 
-def create_primer_lookup(ref_len_tuple, pools, amplicons: list[Amplicon], padding=35):
+def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
     """
-    Returns a dict of chroms, each containing a (max(pools), chrom_len) shaped array
+    Create a lookup table for efficient primer position queries across reference genomes.
+
+    Each chromosome gets its own 2D lookup array where:
+    - Rows represent non-overlapping "pools"* of amplicons at their corresponding positions.
+    - Columns represent genomic positions
+    - Values are Amplicon objects or None
+
+    The function automatically determines the minimum number of rows needed to ensure
+    no amplicons overlap within the same row when accounting for padding.
+
+    * Amplicons are placed in the first available row where they don't overlap, not their pool index.
+
+    Parameters
+    ----------
+    ref_len_tuple : list[tuple[str, int]]
+        List of tuples containing (chromosome_name, chromosome_length) pairs
+        from the reference genome
+    amplicons : list[Amplicon]
+        List of Amplicon objects containing primer scheme information
+    padding : int, optional
+        Number of bases to extend amplicon boundaries on both sides to allow
+        for fuzzy matching of reads with barcodes/adapters (default: 35)
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Dictionary mapping chromosome names to 2D numpy arrays of shape (N, chrom_len+1)
+        where N is the minimum number of rows needed to prevent amplicon overlap.
+        Array elements are either Amplicon objects or None.
+
+
     """
     lookups = {}
     for chrom, chromlen in ref_len_tuple:
-        a = np.empty_like(None, shape=(max(pools), chromlen + 1))
+        lookup_array = np.empty_like(None, shape=(1, chromlen + 1))
         for amp in amplicons:
+            added = False
             if amp.chrom == chrom:
-                a[
-                    amp.ipool,
+                # If amplicon clashes with any in same pool add new row
+                amp_slice = lookup_array[
+                    :,
                     max(amp.amplicon_start - padding, 0) : min(
                         amp.amplicon_end + padding, chromlen
                     ),
-                ] = amp
-        lookups[chrom] = a
+                ]
+                for i, row in enumerate(amp_slice):  # Check each row for collision
+                    if row[row != None].size == 0:
+                        lookup_array[
+                            i,
+                            max(amp.amplicon_start - padding, 0) : min(
+                                amp.amplicon_end + padding, chromlen
+                            ),
+                        ] = amp
+                        added = True
+                # If not added, create new row, add the amplicon to that then add back to original array
+                if not added:
+                    new_row = np.empty_like(None, shape=(1, chromlen + 1))
+                    new_row[
+                        0,
+                        max(amp.amplicon_start - padding, 0) : min(
+                            amp.amplicon_end + padding, chromlen
+                        ),
+                    ] = amp
+                    lookup_array = np.vstack((lookup_array, new_row))
+
+        lookups[chrom] = lookup_array
     return lookups
 
 
@@ -878,7 +930,9 @@ def go(args):
     # Create a lookup table for primer location
     ref_lengths = [(r, infile.get_reference_length(r)) for r in infile.references]
     primer_lookup = create_primer_lookup(
-        ref_len_tuple=ref_lengths, pools=pools, amplicons=amplicon_list, padding=35
+        ref_len_tuple=ref_lengths,
+        amplicons=amplicon_list,
+        padding=args.primer_match_threshold,
     )
 
     trimmed_segments = {x: {} for x in chroms}
@@ -1067,7 +1121,7 @@ def main():
         "-p",
         type=int,
         default=35,
-        help="Fuzzy match primer positions within this threshold",
+        help="Add -p bases of padding to the outside (5' end of primer) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
     )
     parser.add_argument(
         "--report", "-r", type=Path, help="Output report TSV to filepath"

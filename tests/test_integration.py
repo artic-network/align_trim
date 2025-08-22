@@ -85,7 +85,7 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
+            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -135,7 +135,7 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
+            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -225,7 +225,7 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
+            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -275,7 +275,7 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
+            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -420,7 +420,7 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, pools, amplicons, 35)
+            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
 
             # Check the out sam is as expected
             for segment1, segment2 in read_pair_generator(
