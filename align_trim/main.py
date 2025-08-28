@@ -372,7 +372,8 @@ def handle_segments(
             )
 
     if not p1 or not p2:
-        segment = segment1 if segment1 else segment2
+        if paired:
+            segment = segment1 if segment1 else segment2
         if args.verbose:
             print(
                 f"{segment.query_name}: skipped as no primer found for segment",
