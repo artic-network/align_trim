@@ -1,6 +1,6 @@
 [project]
 name = "align_trim"
-version = "1.0.1"
+version = "1.0.2"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
