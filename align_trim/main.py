@@ -1,21 +1,18 @@
-from copy import copy
-import csv
-import pysam
-import sys
-import numpy as np
 import argparse
-from collections import defaultdict
-from typing import Optional
-from pathlib import Path
+import csv
 import itertools
-from typing import Union
-
+import sys
+from collections import defaultdict
+from copy import copy
 from importlib.metadata import version
+from pathlib import Path
+from typing import Optional, Union
 
-from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import BedLine, merge_primers
+import numpy as np
+import pysam
 from primalbedtools.amplicons import Amplicon, create_amplicons
-
+from primalbedtools.bedfiles import BedLine, merge_primers
+from primalbedtools.scheme import Scheme
 
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
 consumesReference = [True, False, True, True, False, False, False, True]
@@ -697,6 +694,11 @@ def go(args):
 
     Based on the most likely primer position, based on the alignment coordinates.
     """
+    # guard for negative normalise
+    if args.normalise is not None and args.normalise < 0:
+        print("normalise must be >= 0, exiting.", file=sys.stderr)
+        sys.exit(1)
+
     # prepare the report outfile
     if args.report:
         reportfh = open(args.report, "w")
@@ -792,7 +794,8 @@ def go(args):
     for amp in amplicon_list:
         amp_depths.setdefault(amp.chrom, {})
         amp_depths[amp.chrom].setdefault(
-            amp.amplicon_number, np.zeros(amp.length, dtype=int)  # type: ignore
+            amp.amplicon_number,
+            np.zeros(amp.length, dtype=int),  # type: ignore
         )
 
     # Initialise the mean depths dictionary, this will get stomped over if normalisation is requested

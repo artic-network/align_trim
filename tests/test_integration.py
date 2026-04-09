@@ -1,14 +1,15 @@
-import pathlib
-import sys
-import unittest
 import argparse
-from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import merge_primers
-from primalbedtools.amplicons import create_amplicons
+import pathlib
 import tempfile
-import pysam
-from align_trim.main import go, create_primer_lookup, find_primer_with_lookup
+import unittest
 from collections import defaultdict
+
+import pysam
+from primalbedtools.amplicons import create_amplicons
+from primalbedtools.bedfiles import merge_primers
+from primalbedtools.scheme import Scheme
+
+from align_trim.main import create_primer_lookup, find_primer_with_lookup, go
 
 BED_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/v5.3.2.primer.bed"
 BAM_PATH_V5_3_2 = pathlib.Path(__file__).parent / "test_data/sars-cov-2_v5.3.2.bam"

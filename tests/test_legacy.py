@@ -1,8 +1,9 @@
 import pathlib
 import unittest
-from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import BedLine
+
 import pysam
+from primalbedtools.bedfiles import BedLine
+from primalbedtools.scheme import Scheme
 
 from align_trim.main import find_primer, trim
 

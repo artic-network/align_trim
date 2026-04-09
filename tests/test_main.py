@@ -1,8 +1,9 @@
 import pathlib
 import unittest
-from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import merge_primers
+
 from primalbedtools.amplicons import create_amplicons
+from primalbedtools.bedfiles import merge_primers
+from primalbedtools.scheme import Scheme
 
 from align_trim.main import (
     create_primer_lookup,
