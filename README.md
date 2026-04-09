@@ -1,6 +1,6 @@
 # align_trim
 
-Stand alone version of ARTIC's fieldbioinfomatics align_trim.py
+Stand alone version of ARTIC's fieldbioinformatics align_trim.py
 
 ## Installation  
 
@@ -25,10 +25,10 @@ uv run align_trim --help
 ### Basic Usage
 
 ```bash
-aligntrim [OPTIONS] BEDFILE
+align_trim [OPTIONS] BEDFILE
 ```
 
-The tool reads alignment data from either a SAM file or stdin and outputs trimmed alignments to stdout in SAM format by default.
+The tool reads alignment data from either a SAM/BAM file or stdin and outputs trimmed alignments to stdout in SAM format by default.
 
 ### Required Arguments
 
@@ -43,9 +43,9 @@ The tool reads alignment data from either a SAM file or stdin and outputs trimme
 
 #### Processing Options
 
-- `--normalise`, `-n` : Subsample to N coverage per amplicon. Use 0 for no normalisation (default: 0)
+- `--normalise`, `-n` : Normalise to target depth N per amplicon using a greedy per-read algorithm. Each read is kept only if it brings the amplicon depth closer to the target. Use 0 for no normalisation (default: 0)
 - `--min-mapq`, `-m` : Minimum mapping quality to keep an aligned read (default: 20)
-- `--primer-match-threshold`, `-p` : Fuzzy match primer positions within this threshold (default: 35)
+- `--primer-match-threshold`, `-p` : Add this many bases of padding to the 5' end of primer coordinates to allow fuzzy matching for reads with barcodes/adapters (default: 35)
 
 #### Primer and Read Handling
 
@@ -69,30 +69,30 @@ The tool reads alignment data from either a SAM file or stdin and outputs trimme
 
 #### Basic trimming with primer removal
 ```bash
-aligntrim primers.bed --bamfile input.bam --output trimmed.bam
+align_trim primers.bed --samfile input.bam --output trimmed.bam
 ```
 
 #### Normalize coverage and generate reports
 ```bash
-aligntrim primers.bed --bamfile input.bam --normalise 100 \
+align_trim primers.bed --samfile input.bam --normalise 100 \
   --report alignment_report.tsv --amp-depth-report depth_report.tsv \
   --output normalized.bam
 ```
 
 #### Process from stdin with verbose output
 ```bash
-samtools view -h input.bam | aligntrim primers.bed --verbose > trimmed.sam 2> verbose.out.txt
+samtools view -h input.bam | align_trim primers.bed --verbose > trimmed.sam 2> verbose.out.txt
 ```
 
 #### Strict full-length read filtering
 ```bash
-aligntrim primers.bed --bamfile input.bam --require-full-length \
+align_trim primers.bed --samfile input.bam --require-full-length \
   --min-mapq 30 --output filtered.bam
 ```
 
 #### Allow mismatched primer pairs with custom threshold
 ```bash
-aligntrim primers.bed --bamfile input.bam --allow-incorrect-pairs \
+align_trim primers.bed --samfile input.bam --allow-incorrect-pairs \
   --primer-match-threshold 50 --output relaxed.bam
 ```
 

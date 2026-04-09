@@ -1,24 +1,18 @@
-from copy import copy
-import csv
-import pysam
-import sys
-import numpy as np
-import random
 import argparse
-from collections import defaultdict
-from typing import Optional
-from pathlib import Path
+import csv
 import itertools
-from typing import Union
-
+import sys
+from collections import defaultdict
+from copy import copy
 from importlib.metadata import version
+from pathlib import Path
+from typing import Optional, Union
 
-from primalbedtools.scheme import Scheme
-from primalbedtools.bedfiles import BedLine, merge_primers
+import numpy as np
+import pysam
 from primalbedtools.amplicons import Amplicon, create_amplicons
-
-RANDOM_SEED = 42
-
+from primalbedtools.bedfiles import BedLine, merge_primers
+from primalbedtools.scheme import Scheme
 
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
 consumesReference = [True, False, True, True, False, False, False, True]
@@ -458,7 +452,7 @@ def handle_segments(
                 return False
 
         # softmask the alignment if right primer start/end inside alignment
-        if segment.reference_end > p2_position:
+        if segment.reference_end > p2_position:  # type: ignore
             try:
                 trim(segment, p2_position, True, args.verbose)
                 if args.verbose:
@@ -484,7 +478,7 @@ def handle_segments(
 
         # Check require-full-length
         if args.require_full_length:
-            if segment.reference_start > p1.end or segment.reference_end < p2.start:
+            if segment.reference_start > p1.end or segment.reference_end < p2.start:  # type: ignore
                 if args.verbose:
                     print(
                         f"{segment.query_name}: ref_start {segment.reference_start} > p1.end {p1.end} or ref_end {segment.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
@@ -496,7 +490,7 @@ def handle_segments(
         if not args.normalise:
             outfile_writer.write(segment)
             segment_amp_relative_start = segment.reference_start - p1.start
-            segment_amp_relative_end = segment.reference_end - p1.start
+            segment_amp_relative_end = segment.reference_end - p1.start  # type: ignore
             if segment_amp_relative_start < 0:
                 segment_amp_relative_start = 0
 
@@ -562,8 +556,8 @@ def handle_segments(
         if args.require_full_length:
             if segment1.reference_start < segment2.reference_start:
                 if (
-                    segment1.reference_start > p1.end
-                    or segment2.reference_end < p2.start
+                    segment1.reference_start > p1.end  # type: ignore
+                    or segment2.reference_end < p2.start  # type: ignore
                 ):
                     if args.verbose:
                         print(
@@ -574,7 +568,7 @@ def handle_segments(
             else:
                 if (
                     segment2.reference_start > p1.end
-                    or segment1.reference_end < p2.start
+                    or segment1.reference_end < p2.start  # type: ignore
                 ):
                     if args.verbose:
                         print(
@@ -589,7 +583,7 @@ def handle_segments(
             outfile_writer.write(segment2)
             for segment_in_pair in (segment1, segment2):
                 segment_amp_relative_start = segment_in_pair.reference_start - p1.start
-                segment_amp_relative_end = segment_in_pair.reference_end - p1.start
+                segment_amp_relative_end = segment_in_pair.reference_end - p1.start  # type: ignore
                 if segment_amp_relative_start < 0:
                     segment_amp_relative_start = 0
             amp_depths[segment1.reference_name][amplicon][
@@ -599,129 +593,6 @@ def handle_segments(
             return (amplicon, False)
 
     return (amplicon, segment)
-
-
-def normalise(
-    trimmed_segments: dict,
-    normalise: int,
-    primers: list[BedLine],
-    outfile: pysam.AlignmentFile,
-    verbose: bool = False,
-):
-    """Normalise the depth of the trimmed segments to a given value. Perform per-amplicon normalisation using numpy vector maths to determine whether the segment in question would take the depth closer to the desired depth across the amplicon.
-
-    Args:
-        trimmed_segments (dict): Dict containing amplicon number as key and list of pysam.AlignedSegment as value, if paired segments are used, the value will be a list of tuples containing the two segments.
-        normalise (int): Desired normalised depth
-        bed (list): Primer scheme as a list of BedLine objects
-        outfile (pysam.AlignmentFile): Output file handle to write the normalised segments to
-        verbose (bool): If True, will print normalisation info during processing
-
-    Raises:
-        ValueError: Amplicon assigned to segment not found in primer scheme file
-
-    Returns:
-        dict: A dictionary containing the mean depth for each amplicon post normalisation
-    """
-    amplicons = {}
-
-    for amplicon in create_amplicons(primers):
-        amplicons.setdefault(amplicon.chrom, {})
-        amplicons[amplicon.chrom].setdefault(
-            amplicon.amplicon_number,
-            {
-                "length": amplicon.amplicon_end - amplicon.amplicon_start,
-                "p_start": amplicon.amplicon_start,
-            },
-        )
-
-    # mean_depths = {x: {} for x in amplicons}
-    mean_depths = {}
-    for chrom in amplicons:
-        for amplicon in amplicons[chrom]:
-            mean_depths[(chrom, amplicon)] = 0
-
-    for chrom, amplicon_dict in trimmed_segments.items():
-        for amplicon, segments in amplicon_dict.items():
-            if amplicon not in amplicons[chrom]:
-                raise ValueError(f"Amplicon {amplicon} not found in primer scheme file")
-
-            desired_depth = np.full_like(
-                (amplicons[chrom][amplicon]["length"],), normalise, dtype=int
-            )
-
-            amplicon_depth = np.zeros(
-                (amplicons[chrom][amplicon]["length"],), dtype=int
-            )
-
-            if not segments:
-                if verbose:
-                    print(
-                        f"No segments assigned to amplicon {amplicon}, skipping",
-                        file=sys.stderr,
-                    )
-                continue
-
-            random.Random(RANDOM_SEED).shuffle(segments)
-
-            distance = np.mean(np.abs(amplicon_depth - desired_depth))
-
-            for segment in segments:
-                paired = isinstance(segment, tuple)
-
-                if paired:
-                    test_depths = np.copy(amplicon_depth)
-                    segment1, segment2 = segment
-                    for segment in (segment1, segment2):
-                        relative_start = (
-                            segment.reference_start
-                            - amplicons[chrom][amplicon]["p_start"]
-                        )
-
-                        if relative_start < 0:
-                            relative_start = 0
-
-                        relative_end = (
-                            segment.reference_end
-                            - amplicons[chrom][amplicon]["p_start"]
-                        )
-
-                        test_depths[relative_start:relative_end] += 1
-
-                    test_distance = np.mean(np.abs(test_depths - desired_depth))
-
-                    if test_distance < distance:
-                        amplicon_depth = test_depths
-                        distance = test_distance
-                        # write the segments to the output file
-                        outfile.write(segment1)
-                        outfile.write(segment2)
-                else:
-                    test_depths = np.copy(amplicon_depth)
-
-                    relative_start = (
-                        segment.reference_start - amplicons[chrom][amplicon]["p_start"]
-                    )
-
-                    if relative_start < 0:
-                        relative_start = 0
-
-                    relative_end = (
-                        segment.reference_end - amplicons[chrom][amplicon]["p_start"]
-                    )
-
-                    test_depths[relative_start:relative_end] += 1
-
-                    test_distance = np.mean(np.abs(test_depths - desired_depth))
-
-                    if test_distance < distance:
-                        amplicon_depth = test_depths
-                        distance = test_distance
-                        outfile.write(segment)
-
-            mean_depths[(chrom, amplicon)] = np.mean(amplicon_depth)
-
-    return mean_depths
 
 
 def read_pair_generator(bam, region_string=None):
@@ -823,6 +694,11 @@ def go(args):
 
     Based on the most likely primer position, based on the alignment coordinates.
     """
+    # guard for negative normalise
+    if args.normalise is not None and args.normalise < 0:
+        print("normalise must be >= 0, exiting.", file=sys.stderr)
+        sys.exit(1)
+
     # prepare the report outfile
     if args.report:
         reportfh = open(args.report, "w")
@@ -856,11 +732,10 @@ def go(args):
     amplicon_list = create_amplicons(scheme.bedlines)
     amplicons = {}
     for amplicon in amplicon_list:
-        amplicon.length = amplicon.amplicon_end - amplicon.amplicon_start
+        amplicon.length = amplicon.amplicon_end - amplicon.amplicon_start  # type: ignore
         amplicons.setdefault(amplicon.chrom, {})[amplicon.amplicon_number] = amplicon
 
     pools = set([bl.pool for bl in scheme.bedlines])
-    chroms = set([bl.chrom for bl in scheme.bedlines])
 
     pools_str = {str(x) for x in pools}
     pools_str.add("unmatched")
@@ -919,7 +794,8 @@ def go(args):
     for amp in amplicon_list:
         amp_depths.setdefault(amp.chrom, {})
         amp_depths[amp.chrom].setdefault(
-            amp.amplicon_number, np.zeros(amp.length, dtype=int)
+            amp.amplicon_number,
+            np.zeros(amp.length, dtype=int),  # type: ignore
         )
 
     # Initialise the mean depths dictionary, this will get stomped over if normalisation is requested
@@ -936,7 +812,14 @@ def go(args):
         padding=args.primer_match_threshold,
     )
 
-    trimmed_segments = {x: {} for x in chroms}
+    # Per-amplicon normalisation state: running depth array and current MAD from target
+    if args.normalise:
+        norm_state = {}
+        for amp in amplicon_list:
+            norm_state[(amp.chrom, amp.amplicon_number)] = {
+                "depth": np.zeros(amp.length, dtype=int),  # type: ignore
+                "distance": float(args.normalise),
+            }
 
     if paired:
         read_pairs = read_pair_generator(chained_iterator)
@@ -972,22 +855,24 @@ def go(args):
             if not args.normalise and not trimmed_pair:
                 continue
 
-            trimmed_segments[trimmed_pair[0].reference_name].setdefault(amplicon, [])  # type: ignore
+            if args.normalise and trimmed_pair:
+                chrom = trimmed_pair[0].reference_name  # type: ignore
+                state = norm_state[(chrom, amplicon)]
+                p_start = amplicons[chrom][amplicon].amplicon_start
+                test_depths = np.copy(state["depth"])
+                for seg in trimmed_pair:  # type: ignore
+                    relative_start = max(0, seg.reference_start - p_start)
+                    relative_end = seg.reference_end - p_start
+                    test_depths[relative_start:relative_end] += 1
+                test_distance = np.mean(np.abs(test_depths - args.normalise))
+                if test_distance < state["distance"]:
+                    state["depth"] = test_depths
+                    state["distance"] = test_distance
+                    outfile.write(trimmed_pair[0])  # type: ignore
+                    outfile.write(trimmed_pair[1])  # type: ignore
 
-            if trimmed_segments:
-                trimmed_segments[trimmed_pair[0].reference_name][amplicon].append(  # type: ignore
-                    trimmed_pair
-                )
-
-        # normalise if requested and write normalised segments to outfile
         if args.normalise:
-            mean_amp_depths = normalise(
-                trimmed_segments=trimmed_segments,
-                normalise=args.normalise,
-                primers=scheme.bedlines,
-                outfile=outfile,
-                verbose=args.verbose,
-            )
+            mean_amp_depths = {k: np.mean(v["depth"]) for k, v in norm_state.items()}
         else:
             mean_amp_depths = {}
             for chrom, chrom_amps in amp_depths.items():
@@ -1042,22 +927,23 @@ def go(args):
             if not args.normalise and not trimmed_segment:
                 continue
 
-            trimmed_segments[trimmed_segment.reference_name].setdefault(amplicon, [])  # type: ignore
-
-            if trimmed_segment and args.normalise:
-                trimmed_segments[trimmed_segment.reference_name][amplicon].append(  # type: ignore
-                    trimmed_segment
-                )
+            if args.normalise and trimmed_segment:
+                chrom = trimmed_segment.reference_name  # type: ignore
+                state = norm_state[(chrom, amplicon)]
+                p_start = amplicons[chrom][amplicon].amplicon_start
+                test_depths = np.copy(state["depth"])
+                relative_start = max(0, trimmed_segment.reference_start - p_start)  # type: ignore
+                relative_end = trimmed_segment.reference_end - p_start  # type: ignore
+                test_depths[relative_start:relative_end] += 1
+                test_distance = np.mean(np.abs(test_depths - args.normalise))
+                if test_distance < state["distance"]:
+                    state["depth"] = test_depths
+                    state["distance"] = test_distance
+                    outfile.write(trimmed_segment)  # type: ignore
 
         # normalise if requested
         if args.normalise:
-            mean_amp_depths = normalise(
-                trimmed_segments=trimmed_segments,
-                normalise=args.normalise,
-                primers=scheme.bedlines,
-                outfile=outfile,
-                verbose=args.verbose,
-            )
+            mean_amp_depths = {k: np.mean(v["depth"]) for k, v in norm_state.items()}
 
         else:
             mean_amp_depths = {}
