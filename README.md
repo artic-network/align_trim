@@ -129,4 +129,4 @@ When using `--genome-coverage-report PREFIX`, per-position genome coverage is wr
 - `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming (before normalisation subsampling)
 - `PREFIX.post-normalisation.coverage.tsv` — coverage of reads retained after normalisation
 
-In both cases, a coverage summary is printed to stderr showing the percentage of genome positions covered at >=1x, >=10x, >=20x, and >=100x.
+In both cases, a coverage summary is printed to stderr showing the percentage of genome positions covered at >=1x, >=10x, >=20x, >=100x, and >=1000x.
