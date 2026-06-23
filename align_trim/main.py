@@ -712,7 +712,7 @@ def write_genome_coverage(filepath, genome_coverage, label=None):
             for i, d in enumerate(depths):
                 writer.writerow({"chrom": chrom, "pos": i + 1, "depth": int(d)})
     all_depths = np.concatenate(list(genome_coverage.values()))
-    thresholds = [1, 10, 20, 100]
+    thresholds = [1, 10, 20, 100, 1000]
     prefix = f"{label}: " if label else ""
     print(f"{prefix}Genome coverage summary", file=sys.stderr)
     print(f"{prefix}  Total positions: {total_len}", file=sys.stderr)
