@@ -227,6 +227,7 @@ def handle_segments(
     outfile_writer: pysam.AlignmentFile,
     amp_depths: dict,
     report_writer: csv.DictWriter = False,  # type: ignore
+    genome_coverage: Optional[dict] = None,
 ):
     """Handle the alignment segment(s) including filtering, soft masking, and reporting.
 
@@ -486,6 +487,11 @@ def handle_segments(
                     )
                 return False
 
+        if genome_coverage is not None:
+            genome_coverage[segment.reference_name][
+                segment.reference_start : segment.reference_end
+            ] += 1
+
         # If not normalising, write the segment to the output file and add it to amplicon depth numpy array
         if not args.normalise:
             outfile_writer.write(segment)
@@ -576,6 +582,12 @@ def handle_segments(
                             file=sys.stderr,
                         )
                     return False
+
+        if genome_coverage is not None:
+            for seg in (segment1, segment2):
+                genome_coverage[seg.reference_name][
+                    seg.reference_start : seg.reference_end
+                ] += 1
 
         # If not normalising, write the segments to the output file and add them to amplicon depth numpy array
         if not args.normalise:
@@ -687,6 +699,27 @@ def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
 
         lookups[chrom] = lookup_array
     return lookups
+
+
+def write_genome_coverage(filepath, genome_coverage, label=None):
+    total_len = sum(len(arr) for arr in genome_coverage.values())
+    with open(filepath, "w", newline="") as fh:
+        writer = csv.DictWriter(
+            fh, fieldnames=["chrom", "pos", "depth"], delimiter="\t"
+        )
+        writer.writeheader()
+        for chrom, depths in genome_coverage.items():
+            for i, d in enumerate(depths):
+                writer.writerow({"chrom": chrom, "pos": i + 1, "depth": int(d)})
+    all_depths = np.concatenate(list(genome_coverage.values()))
+    thresholds = [1, 10, 20, 100]
+    prefix = f"{label}: " if label else ""
+    print(f"{prefix}Genome coverage summary", file=sys.stderr)
+    print(f"{prefix}  Total positions: {total_len}", file=sys.stderr)
+    for t in thresholds:
+        count = int(np.sum(all_depths >= t))
+        pct = (count / total_len) * 100 if total_len > 0 else 0
+        print(f"{prefix}  >= {t}x: {count}/{total_len} ({pct:.2f}%)", file=sys.stderr)
 
 
 def go(args):
@@ -812,6 +845,18 @@ def go(args):
         padding=args.primer_match_threshold,
     )
 
+    # Initialise genome-wide coverage arrays if requested
+    genome_coverage_pre = None
+    genome_coverage_post = None
+    if args.genome_coverage_report:
+        genome_coverage_pre = {}
+        for ref_name, ref_len in ref_lengths:
+            genome_coverage_pre[ref_name] = np.zeros(ref_len, dtype=int)
+        if args.normalise:
+            genome_coverage_post = {}
+            for ref_name, ref_len in ref_lengths:
+                genome_coverage_post[ref_name] = np.zeros(ref_len, dtype=int)
+
     # Per-amplicon normalisation state: running depth array and current MAD from target
     if args.normalise:
         norm_state = {}
@@ -834,6 +879,7 @@ def go(args):
                     min_mapq=args.min_mapq,
                     outfile_writer=outfile,
                     amp_depths=amp_depths,
+                    genome_coverage=genome_coverage_pre,
                 )
             else:
                 trimming_tuple = handle_segments(
@@ -843,6 +889,7 @@ def go(args):
                     min_mapq=args.min_mapq,
                     outfile_writer=outfile,
                     amp_depths=amp_depths,
+                    genome_coverage=genome_coverage_pre,
                 )
 
             if not trimming_tuple:
@@ -870,6 +917,11 @@ def go(args):
                     state["distance"] = test_distance
                     outfile.write(trimmed_pair[0])  # type: ignore
                     outfile.write(trimmed_pair[1])  # type: ignore
+                    if genome_coverage_post is not None:
+                        for seg in trimmed_pair:  # type: ignore
+                            genome_coverage_post[seg.reference_name][
+                                seg.reference_start : seg.reference_end
+                            ] += 1
 
         if args.normalise:
             mean_amp_depths = {k: np.mean(v["depth"]) for k, v in norm_state.items()}
@@ -905,6 +957,7 @@ def go(args):
                     lookup=primer_lookup,
                     outfile_writer=outfile,
                     amp_depths=amp_depths,
+                    genome_coverage=genome_coverage_pre,
                 )
 
             else:
@@ -915,6 +968,7 @@ def go(args):
                     lookup=primer_lookup,
                     outfile_writer=outfile,
                     amp_depths=amp_depths,
+                    genome_coverage=genome_coverage_pre,
                 )
 
             if not trimming_tuple:
@@ -940,6 +994,10 @@ def go(args):
                     state["depth"] = test_depths
                     state["distance"] = test_distance
                     outfile.write(trimmed_segment)  # type: ignore
+                    if genome_coverage_post is not None:
+                        genome_coverage_post[trimmed_segment.reference_name][  # type: ignore
+                            trimmed_segment.reference_start : trimmed_segment.reference_end  # type: ignore
+                        ] += 1
 
         # normalise if requested
         if args.normalise:
@@ -965,6 +1023,18 @@ def go(args):
                     writer.writerow(
                         {"chrom": chrom, "amplicon": amplicon, "mean_depth": depth}
                     )
+
+    # Write genome coverage reports
+    if args.genome_coverage_report:
+        pre_path = f"{args.genome_coverage_report}.pre-normalisation.coverage.tsv"
+        write_genome_coverage(pre_path, genome_coverage_pre, label="Pre-normalisation")
+        if args.normalise and genome_coverage_post is not None:
+            post_path = (
+                f"{args.genome_coverage_report}.post-normalisation.coverage.tsv"
+            )
+            write_genome_coverage(
+                post_path, genome_coverage_post, label="Post-normalisation"
+            )
 
     # close up the file handles
     infile.close()
@@ -1018,6 +1088,14 @@ def main():
         "-a",
         type=Path,
         help="Output amplicon depth TSV to filepath",
+    )
+    parser.add_argument(
+        "--genome-coverage-report",
+        "-g",
+        type=str,
+        default=None,
+        metavar="PREFIX",
+        help="Output per-position genome coverage TSV(s) using PREFIX. Produces PREFIX.pre-normalisation.coverage.tsv (always) and PREFIX.post-normalisation.coverage.tsv (when --normalise is used). Summary stats are printed to stderr.",
     )
     parser.add_argument(
         "--no-trim-primers",
