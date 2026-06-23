@@ -57,6 +57,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 
 - `--report`, `-r` : Output detailed report TSV to specified filepath
 - `--amp-depth-report`, `-a` : Output mean depth for each amplicon as TSV to specified filepath
+- `--genome-coverage-report`, `-g` : Output per-position genome coverage TSV(s) using the given prefix. Summary statistics (% genome covered at >=1x, >=10x, >=20x, >=100x) are printed to stderr. See [Genome Coverage Report](#genome-coverage-report) for details
 - `--no-read-groups` : Do not divide reads into pool-based read groups in SAM/BAM output
 
 #### General Options
@@ -76,6 +77,7 @@ align_trim primers.bed --samfile input.bam --output trimmed.bam
 ```bash
 align_trim primers.bed --samfile input.bam --normalise 100 \
   --report alignment_report.tsv --amp-depth-report depth_report.tsv \
+  --genome-coverage-report sample1 \
   --output normalized.bam
 ```
 
@@ -115,3 +117,16 @@ When using `--report`, a tab-separated file is generated with the following colu
 - Additional alignment metrics
 
 The `--amp-depth-report` generates a summary of coverage depth per amplicon.
+
+### Genome Coverage Report
+
+When using `--genome-coverage-report PREFIX`, per-position genome coverage is written as tab-separated files with columns `chrom`, `pos` (1-based), and `depth`.
+
+**Without `--normalise`**, a single file is produced:
+- `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming
+
+**With `--normalise`**, two files are produced:
+- `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming (before normalisation subsampling)
+- `PREFIX.post-normalisation.coverage.tsv` — coverage of reads retained after normalisation
+
+In both cases, a coverage summary is printed to stderr showing the percentage of genome positions covered at >=1x, >=10x, >=20x, >=100x, and >=1000x.
