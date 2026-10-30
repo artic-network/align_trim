@@ -60,6 +60,7 @@ def create_args(**kwargs):
         "require_full_length": False,
         "output": None,
         "genome_coverage_report": None,
+        "qc_prefix": None,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
