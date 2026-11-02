@@ -81,12 +81,12 @@ WARNING: possible amplicon contamination: ...
 
 ### Basic trimming with primer removal
 ```bash
-align_trim primers.bed --samfile input.bam --output trimmed.bam
+align_trim primer.bed --samfile input.bam --output trimmed.bam
 ```
 
 ### Normalise coverage and generate reports
 ```bash
-align_trim primers.bed --samfile input.bam --normalise 100 \
+align_trim primer.bed --samfile input.bam --normalise 100 \
   --report alignment_report.tsv --amp-depth-report depth_report.tsv \
   --genome-coverage-report sample1 \
   --output normalized.bam
@@ -94,23 +94,23 @@ align_trim primers.bed --samfile input.bam --normalise 100 \
 
 ### Amplicon QC reports
 ```bash
-align_trim primers.bed --samfile input.bam --qc-prefix sample1 --output trimmed.bam
+align_trim primer.bed --samfile input.bam --qc-prefix sample1 --output trimmed.bam
 ```
 
 ### Process from stdin with verbose output
 ```bash
-samtools view -h input.bam | align_trim primers.bed --verbose > trimmed.sam 2> verbose.out.txt
+samtools view -h input.bam | align_trim primer.bed --verbose > trimmed.sam 2> verbose.out.txt
 ```
 
 ### Strict full-length read filtering
 ```bash
-align_trim primers.bed --samfile input.bam --require-full-length \
+align_trim primer.bed --samfile input.bam --require-full-length \
   --min-mapq 30 --output filtered.bam
 ```
 
 ### Allow mismatched primer pairs with custom threshold
 ```bash
-align_trim primers.bed --samfile input.bam --allow-incorrect-pairs \
+align_trim primer.bed --samfile input.bam --allow-incorrect-pairs \
   --primer-match-threshold 50 --output relaxed.bam
 ```
 

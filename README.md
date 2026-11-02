@@ -23,17 +23,17 @@ uv run align_trim --help
 ## Quick start
 
 ```bash
-align_trim primers.bed --samfile input.bam --output trimmed.bam
+align_trim primer.bed --samfile input.bam --output trimmed.bam
 ```
 
-- `primers.bed` is the primer scheme in [primer.bed v3](https://doi.org/10.5281/zenodo.16366659) format.
+- `primer.bed` is the primer scheme in [primer.bed v3](https://doi.org/10.5281/zenodo.16366659) format.
 - `input.bam` is a sorted BAM of reads aligned to the scheme's reference. Leave out `--samfile` to read SAM/BAM from stdin.
 - The output format follows the extension (`.bam` or `.sam`). Leave out `--output` to write SAM to stdout.
 
 Normalise to 200x per amplicon and write the amplicon QC reports:
 
 ```bash
-align_trim primers.bed --samfile input.bam --output trimmed.bam \
+align_trim primer.bed --samfile input.bam --output trimmed.bam \
   --normalise 200 --qc-prefix sample1
 ```
 
