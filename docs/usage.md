@@ -61,7 +61,7 @@ Set `NO_COLOR=1` to turn off colour in a terminal, or `FORCE_COLOR=1` to keep it
 
 ```
 == Run ==
-align_trim 1.2.0
+align_trim 2.0.0
   input   sample.sorted.bam (paired-end)
   scheme  primer.bed (48 amplicons, 1 reference)
   output  trimmed.bam

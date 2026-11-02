@@ -56,4 +56,4 @@ Run `align_trim --help` for every option. Progress, coverage and QC summaries an
 - [Usage](https://github.com/artic-network/align_trim/blob/main/docs/usage.md): every option, examples and output formats
 - [Report outputs](https://github.com/artic-network/align_trim/blob/main/docs/outputs.md): `--report`, `--amp-depth-report` and `--genome-coverage-report`
 - [QC reports](https://github.com/artic-network/align_trim/blob/main/docs/qc-reports.md): the `--qc-prefix` reports and how to read them
-- [Behaviour changes](https://github.com/artic-network/align_trim/blob/main/docs/behaviour-changes.md): changes since align_trim 1.2.0
+- [Changelog](https://github.com/artic-network/align_trim/blob/main/CHANGELOG.md): changes in each release, including behaviour changes in 2.0.0
