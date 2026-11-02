@@ -1,4 +1,6 @@
+import contextlib
 import csv
+import io
 import pathlib
 import random
 import statistics
@@ -12,6 +14,7 @@ from primalbedtools.amplicons import create_amplicons
 from primalbedtools.bedfiles import merge_primers
 from primalbedtools.scheme import Scheme
 
+from align_trim.console import console
 from align_trim.main import (
     create_primer_lookup,
     fragment_spans,
@@ -20,14 +23,17 @@ from align_trim.main import (
     trim,
 )
 from align_trim.qc import (
+    AMPLICON_REASONS,
     QC,
+    REASONS,
+    breakpoint_positions,
     classify_primer_pair,
     count_bases_in_window,
+    join_orientation,
     junctions,
     overlap_stats,
     parse_sa_tag,
     revcomp,
-    split_orientation,
 )
 from tests.test_integration import (
     BAM_PATH_PAIRED_V3_0_0,
@@ -39,7 +45,9 @@ from tests.test_integration import (
 CHROM = "MN908947.3"
 HEADER = pysam.AlignmentHeader.from_dict({"SQ": [{"SN": CHROM, "LN": 29903}]})
 
-Primer = namedtuple("Primer", ["chrom", "amplicon_number", "pool"])
+Primer = namedtuple(
+    "Primer", ["chrom", "amplicon_number", "pool", "start", "end"], defaults=(0, 0)
+)
 
 
 def make_segment(start, cigar, seq=None, name="read", reverse=False, mapq=60):
@@ -57,7 +65,7 @@ def make_segment(start, cigar, seq=None, name="read", reverse=False, mapq=60):
     return seg
 
 
-def v3_qc(min_mapq=20, padding=35):
+def v3_qc(min_mapq=20, padding=5):
     scheme = Scheme.from_file(str(BED_PATH_V3_0_0))
     bedlines = list(scheme.bedlines)
     amplicons = create_amplicons(merge_primers(scheme.bedlines))
@@ -142,8 +150,8 @@ class TestBugFixes(unittest.TestCase):
 class TestClassifyPrimerPair(unittest.TestCase):
     def test_categories(self):
         cases = [
-            (Primer(CHROM, 5, 1), Primer(CHROM, 5, 1), "correct"),
-            (Primer(CHROM, 6, 2), Primer(CHROM, 5, 1), "short_overlap"),
+            (Primer(CHROM, 5, 1), Primer(CHROM, 5, 1), "expected"),
+            (Primer(CHROM, 6, 2), Primer(CHROM, 5, 1), "overlap_product"),
             (Primer(CHROM, 5, 1), Primer(CHROM, 7, 1), "long_same_pool"),
             (Primer(CHROM, 5, 1), Primer(CHROM, 6, 2), "long_cross_pool"),
             (Primer(CHROM, 5, 1), Primer(CHROM, 3, 1), "other"),
@@ -151,6 +159,70 @@ class TestClassifyPrimerPair(unittest.TestCase):
         ]
         for p1, p2, expected in cases:
             self.assertEqual(classify_primer_pair(p1, p2), expected)
+
+    def test_overlap_product_requires_primer_ends(self):
+        """An overlap product must start and end within the threshold (default 5) of the primer 5' ends"""
+        left = Primer(CHROM, 6, 2, start=1000, end=1022)
+        right = Primer(CHROM, 5, 1, start=1080, end=1100)
+        cases = [
+            ((1000, 1100), "overlap_product"),
+            ((1005, 1095), "overlap_product"),
+            ((995, 1105), "overlap_product"),
+            ((1006, 1100), "partial_in_overlap"),
+            ((1000, 1094), "partial_in_overlap"),
+        ]
+        for (start, end), expected in cases:
+            self.assertEqual(
+                classify_primer_pair(left, right, start, end), expected, (start, end)
+            )
+
+    def test_long_products_not_end_checked(self):
+        """Long products cannot come from a single amplicon so stay classified wherever their ends are"""
+        left = Primer(CHROM, 5, 1, start=1000, end=1022)
+        right = Primer(CHROM, 7, 1, start=1900, end=1922)
+        self.assertEqual(
+            classify_primer_pair(left, right, 1100, 1800), "long_same_pool"
+        )
+
+
+class TestReadPairFates(unittest.TestCase):
+    def mates(self, name, flag1, flag2):
+        read1 = make_segment(100, "50M", name=name)
+        read1.flag = flag1
+        read2 = make_segment(130, "50M", name=name, reverse=True)
+        read2.flag = flag2
+        return read1, read2
+
+    def test_unpaired_records_recorded(self):
+        qc = v3_qc()
+        proper = self.mates("proper", 1 + 2 + 64, 1 + 2 + 128 + 16)
+        not_proper = self.mates("not_proper", 1 + 64, 1 + 128 + 16)
+        # read2 unmapped, read1 flags its mate as unmapped
+        unmapped = self.mates("unmapped", 1 + 8 + 64, 1 + 4 + 128)
+        orphan = self.mates("orphan", 1 + 2 + 64, 1 + 2 + 128 + 16)[0]
+        orphan_mate_unmapped = self.mates("orphan_unmapped", 1 + 8 + 64, 0)[0]
+
+        records = [*proper, *not_proper, *unmapped, orphan, orphan_mate_unmapped]
+        pairs = list(read_pair_generator(records, qc=qc))
+
+        self.assertEqual(pairs, [proper])
+        self.assertEqual(
+            dict(qc.unassigned),
+            {"not_proper_pair": 1, "unmapped": 2, "missing_mate": 1},
+        )
+
+    def test_supplementary_and_secondary_not_counted(self):
+        qc = v3_qc()
+        supp = make_segment(500, "50M", name="proper")
+        supp.flag = 1 + 2 + 64 + 2048
+        secondary = make_segment(700, "50M", name="proper")
+        secondary.flag = 1 + 2 + 128 + 256
+        proper = self.mates("proper", 1 + 2 + 64, 1 + 2 + 128 + 16)
+        pairs = list(
+            read_pair_generator([proper[0], supp, secondary, proper[1]], qc=qc)
+        )
+        self.assertEqual(pairs, [proper])
+        self.assertEqual(sum(qc.unassigned.values()), 0)
 
 
 class TestSplitAlignments(unittest.TestCase):
@@ -161,48 +233,61 @@ class TestSplitAlignments(unittest.TestCase):
         # minus strand query coordinates are converted to read orientation
         self.assertEqual(parts[1], ("chr2", 200, 252, "-", 7, 40, 90))
 
-    def test_junctions_and_orientation(self):
+    def test_junctions_positions_and_orientation(self):
         primary = parse_sa_tag("c,1,+,100M50S,60,0")[0]
         collinear = parse_sa_tag("c,501,+,100S50M,60,0")[0]
-        self.assertEqual(junctions([collinear, primary]), [(("c", 100), ("c", 500))])
-        self.assertEqual(split_orientation(primary, [primary, collinear]), "collinear")
+        self.assertEqual(junctions([collinear, primary]), [(primary, collinear)])
+        # last aligned base before the break (100) and first after it (501), 1-based
+        self.assertEqual(breakpoint_positions(primary, collinear), (100, 501))
+        self.assertEqual(join_orientation(primary, collinear), "collinear")
         backwards = parse_sa_tag("c,1001,+,100S50M,60,0")[0]._replace(ref_start=-50)
-        self.assertEqual(
-            split_orientation(primary, [primary, backwards]), "non_collinear"
-        )
+        self.assertEqual(join_orientation(primary, backwards), "non_collinear")
         inverted = parse_sa_tag("c,501,-,50M100S,60,0")[0]
-        self.assertEqual(split_orientation(primary, [primary, inverted]), "inverted")
+        self.assertEqual(join_orientation(primary, inverted), "inverted")
+        # on the minus strand the part's read-order end is its lowest reference base
+        self.assertEqual(breakpoint_positions(primary, inverted), (100, 550))
 
     def classify(self, sa):
         qc = v3_qc()
         seg = make_segment(30, "380M300S")
         seg.set_tag("SA", sa)
-        qc.split(seg)
-        self.assertEqual(sum(qc.split_classes.values()), 1)
-        return next(iter(qc.split_classes))
+        qc.split((seg,))
+        self.assertEqual(sum(qc.split_fragments.values()), 1)
+        return next(iter(qc.split_fragments))
 
-    def test_amplicon_junction(self):
+    def test_amplicon_chimera(self):
         # amplicon 1 (30-410) joined to amplicon 3 (starts 642)
         self.assertEqual(
-            self.classify(f"{CHROM},643,+,380S300M,60,0;"), "amplicon_junction"
+            self.classify(f"{CHROM},643,+,380S300M,60,0;"), "amplicon_chimera"
         )
 
-    def test_internal_breakpoint(self):
+    def test_within_amplicon(self):
         # 200 is inside the amplicon 1 insert, away from every amplicon end
         self.assertEqual(
-            self.classify(f"{CHROM},201,+,380S300M,60,0;"), "internal_breakpoint"
+            self.classify(f"{CHROM},201,+,380S300M,60,0;"), "within_amplicon"
         )
 
-    def test_low_confidence(self):
-        self.assertEqual(
-            self.classify(f"{CHROM},643,+,380S300M,5,0;"), "low_confidence"
-        )
+    def test_low_mapq(self):
+        self.assertEqual(self.classify(f"{CHROM},643,+,380S300M,5,0;"), "low_mapq")
 
     def test_no_sa_tag(self):
         qc = v3_qc()
-        qc.split(make_segment(30, "380M"))
-        self.assertEqual(qc.split_reads, 1)
-        self.assertEqual(sum(qc.split_classes.values()), 0)
+        qc.split((make_segment(30, "380M"),))
+        self.assertEqual(qc.split_checked, 1)
+        self.assertEqual(sum(qc.split_fragments.values()), 0)
+
+    def test_join_in_both_mates_counted_once(self):
+        """Overlapping mates of one pair can both cross the same join, which is one event"""
+        qc = v3_qc()
+        mate1 = make_segment(30, "380M300S")
+        mate1.set_tag("SA", f"{CHROM},643,+,380S300M,60,0;")
+        # the reverse mate reads the same molecule from the other end: amplicon 3 part first in read order
+        mate2 = make_segment(642, "300S300M", reverse=True)
+        mate2.set_tag("SA", f"{CHROM},31,-,380M300S,60,0;")
+        qc.split((mate1, mate2))
+        self.assertEqual(qc.split_checked, 1)
+        self.assertEqual(dict(qc.split_fragments), {"amplicon_chimera": 1})
+        self.assertEqual(list(qc.joins.values()), [1])
 
 
 class TestSameDirection(unittest.TestCase):
@@ -222,7 +307,7 @@ class TestSameDirection(unittest.TestCase):
         qc.same_direction(seg, seg, p1, p2)
         self.assertEqual(
             [(a.primername, b.primername, c) for a, b, c in qc.pairs],
-            [("nCoV-2019_1_LEFT_1", "nCoV-2019_3_LEFT_1", "left_left")],
+            [("nCoV-2019_1_LEFT_1", "nCoV-2019_3_LEFT_1", "two_left_primers")],
         )
 
     def test_explained_ends_not_scanned(self):
@@ -268,6 +353,34 @@ class TestOverlapCounting(unittest.TestCase):
         self.assertEqual(right_major[1], "T")
 
 
+class TestContaminationWarning(unittest.TestCase):
+    def write_overlaps(self, qc):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-warn") as tempdir:
+            with contextlib.redirect_stderr(stderr):
+                console.reset()
+                qc._write_overlaps(f"{tempdir}/overlaps.tsv")
+                # the warning is held back and printed under the Warnings heading
+                console.flush_warnings()
+        return stderr.getvalue()
+
+    def test_warning_on_major_allele_mismatch(self):
+        qc = v3_qc()
+        window = qc.windows[0]
+        window["left"][0, 0] = 20  # A
+        window["right"][0, 1] = 20  # C
+        out = self.write_overlaps(qc)
+        self.assertIn("WARNING: possible amplicon contamination", out)
+        self.assertIn("1/2", out)
+
+    def test_no_warning_when_concordant(self):
+        qc = v3_qc()
+        window = qc.windows[0]
+        window["left"][0, 0] = 20
+        window["right"][0, 0] = 20
+        self.assertNotIn("WARNING", self.write_overlaps(qc))
+
+
 class TestQCIntegration(unittest.TestCase):
     def run_go(self, tempdir, name, **kwargs):
         out = pathlib.Path(tempdir) / f"{name}.sam"
@@ -301,8 +414,13 @@ class TestQCIntegration(unittest.TestCase):
                 )
                 self.assertEqual(records(plain), records(with_qc), kwargs)
 
-    def test_read_fate_se(self):
-        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-fate") as tempdir:
+    def assert_fragments_add_up(self, rows, reasons):
+        for r in rows:
+            removed = sum(int(r[f"removed_{reason}"]) for reason in reasons)
+            self.assertEqual(int(r["kept"]) + removed, int(r["fragments"]), r)
+
+    def test_fragment_accounting_se(self):
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-se") as tempdir:
             for normalise in (0, 20):
                 prefix = f"{tempdir}/n{normalise}"
                 report = pathlib.Path(tempdir) / f"n{normalise}.report.tsv"
@@ -313,32 +431,47 @@ class TestQCIntegration(unittest.TestCase):
                     qc_prefix=prefix,
                     report=report,
                 )
-                rows = read_tsv(f"{prefix}.read_fate.tsv")
-                total = sum(int(r["total"]) for r in rows)
-                self.assertEqual(
-                    total, sum(1 for _ in pysam.AlignmentFile(str(BAM_PATH_V5_3_2)))
-                )
-                self.assertEqual(sum(int(r["kept"]) for r in rows), len(records(out)))
-                normalised_out = sum(int(r["normalised_out"]) for r in rows)
-                self.assertEqual(normalised_out > 0, normalise > 0)
+                (summary,) = read_tsv(f"{prefix}.summary.tsv")
+                amplicons = read_tsv(f"{prefix}.amplicons.tsv")
+                self.assert_fragments_add_up([summary], REASONS)
+                self.assert_fragments_add_up(amplicons, AMPLICON_REASONS)
 
-                amplicons = create_amplicons(
+                # each read counted once, extra alignments of a read are not
+                self.assertEqual(
+                    int(summary["fragments"]),
+                    sum(
+                        1
+                        for r in pysam.AlignmentFile(str(BAM_PATH_V5_3_2))
+                        if not (r.is_supplementary or r.is_secondary)
+                    ),
+                )
+                self.assertEqual(int(summary["kept"]), len(records(out)))
+                self.assertEqual(
+                    sum(int(r["kept"]) for r in amplicons), int(summary["kept"])
+                )
+                self.assertEqual(
+                    int(summary["removed_by_normalise"]) > 0, normalise > 0
+                )
+
+                scheme_amplicons = create_amplicons(
                     merge_primers(Scheme.from_file(create_args().bedfile).bedlines)
                 )
-                assigned = {
-                    r["amplicon"] for r in rows if r["amplicon"] != "unassigned"
-                }
-                self.assertEqual(assigned, {str(a.amplicon_number) for a in amplicons})
+                self.assertEqual(
+                    [r["amplicon"] for r in amplicons],
+                    [str(a.amplicon_number) for a in scheme_amplicons],
+                )
 
-                incorrect = sum(
+                mismatched = sum(
                     1 for r in read_tsv(report) if r["CorrectlyPaired"] == "False"
                 )
                 self.assertEqual(
-                    sum(int(r["incorrectly_paired"]) for r in rows), incorrect
+                    int(summary["removed_mismatched_primers"])
+                    + int(summary["removed_partial_in_overlap"]),
+                    mismatched,
                 )
 
-    def test_read_fate_pe(self):
-        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-fate-pe") as tempdir:
+    def test_fragment_accounting_pe(self):
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-pe") as tempdir:
             for normalise in (0, 200):
                 prefix = f"{tempdir}/n{normalise}"
                 out = self.run_go(
@@ -349,14 +482,23 @@ class TestQCIntegration(unittest.TestCase):
                     bedfile=BED_PATH_V3_0_0,
                     samfile=BAM_PATH_PAIRED_V3_0_0,
                 )
-                rows = read_tsv(f"{prefix}.read_fate.tsv")
-                self.assertEqual(
-                    sum(int(r["kept"]) for r in rows) * 2, len(records(out))
+                (summary,) = read_tsv(f"{prefix}.summary.tsv")
+                self.assert_fragments_add_up([summary], REASONS)
+                self.assert_fragments_add_up(
+                    read_tsv(f"{prefix}.amplicons.tsv"), AMPLICON_REASONS
                 )
+                self.assertEqual(int(summary["kept"]) * 2, len(records(out)))
+                # every fragment (read name) is counted exactly once, paired or not
+                fragments = {
+                    r.query_name
+                    for r in pysam.AlignmentFile(str(BAM_PATH_PAIRED_V3_0_0))
+                    if not (r.is_supplementary or r.is_secondary)
+                }
+                self.assertEqual(int(summary["fragments"]), len(fragments))
 
     def test_primer_pairs(self):
         scheme = Scheme.from_file(create_args().bedfile)
-        # CorrectlyPaired ignores chrom, so it only equals "correct" for single chrom schemes
+        # CorrectlyPaired ignores chrom, so it only equals "expected" for single chrom schemes
         self.assertEqual(len({bl.chrom for bl in scheme.bedlines}), 1)
 
         with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-pairs") as tempdir:
@@ -373,23 +515,25 @@ class TestQCIntegration(unittest.TestCase):
                 )
                 rows = read_tsv(f"{prefix}.primer_pairs.tsv")
                 counts[allow] = sorted(
-                    (r["left_primer"], r["right_primer"], r["category"], r["count"])
+                    (r["left_primer"], r["right_primer"], r["type"], r["fragments"])
                     for r in rows
                 )
                 coordinate_rows = [
-                    r for r in rows if r["category"] not in ("left_left", "right_right")
+                    r
+                    for r in rows
+                    if r["type"] not in ("two_left_primers", "two_right_primers")
                 ]
                 report_rows = read_tsv(report)
                 self.assertEqual(
-                    sum(int(r["count"]) for r in coordinate_rows), len(report_rows)
+                    sum(int(r["fragments"]) for r in coordinate_rows), len(report_rows)
                 )
                 self.assertEqual(
-                    sum(int(r["count"]) for r in rows if r["category"] == "correct"),
+                    sum(int(r["fragments"]) for r in rows if r["type"] == "expected"),
                     sum(1 for r in report_rows if r["CorrectlyPaired"] == "True"),
                 )
             self.assertEqual(counts[False], counts[True])
 
-    def test_split_alignments_se(self):
+    def test_split_reads_se(self):
         expected = sum(
             1
             for r in pysam.AlignmentFile(str(BAM_PATH_V5_3_2))
@@ -400,35 +544,58 @@ class TestQCIntegration(unittest.TestCase):
         self.assertGreater(expected, 0)
         with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-split") as tempdir:
             prefix = f"{tempdir}/qc"
-            self.run_go(tempdir, "qc", qc_prefix=prefix)
-            rows = read_tsv(f"{prefix}.split_alignments.tsv")
-            self.assertEqual(sum(int(r["reads"]) for r in rows), expected)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.run_go(tempdir, "qc", qc_prefix=prefix)
+            self.assertIn(f"QC: split reads: {expected} of ", stderr.getvalue())
+            rows = read_tsv(f"{prefix}.split_reads.tsv")
+            # every split read has at least one join
+            self.assertGreaterEqual(sum(int(r["fragments"]) for r in rows), expected)
             self.assertTrue(
-                {r["class"] for r in rows}
-                <= {"amplicon_junction", "internal_breakpoint", "low_confidence"}
+                {r["type"] for r in rows}
+                <= {"amplicon_chimera", "within_amplicon", "low_mapq"}
             )
-            self.assertTrue(read_tsv(f"{prefix}.split_breakpoints.tsv"))
+            for r in rows:
+                # lower coordinate side first, positions are 1-based window starts
+                self.assertLessEqual(
+                    (r["chrom"], int(r["pos"])),
+                    (r["joined_chrom"], int(r["joined_pos"])),
+                )
+                self.assertEqual(int(r["pos"]) % 10, 1)
 
-    def test_overlap_windows(self):
+    def test_overlaps(self):
         with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-overlap") as tempdir:
             prefix = f"{tempdir}/qc"
-            self.run_go(
-                tempdir,
-                "qc",
-                qc_prefix=prefix,
-                bedfile=BED_PATH_V3_0_0,
-                samfile=BAM_PATH_PAIRED_V3_0_0,
-            )
-            summary = read_tsv(f"{prefix}.overlap_summary.tsv")
-            first = summary[0]
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.run_go(
+                    tempdir,
+                    "qc",
+                    qc_prefix=prefix,
+                    bedfile=BED_PATH_V3_0_0,
+                    samfile=BAM_PATH_PAIRED_V3_0_0,
+                )
+            overlaps = read_tsv(f"{prefix}.overlaps.tsv")
+            compared = [r for r in overlaps if int(r["compared_positions"])]
+            self.assertTrue(compared)
+            # the contamination warning is printed exactly when an overlap has a consensus difference
             self.assertEqual(
-                (first["amplicon_left"], first["amplicon_right"]), ("1", "2")
+                "WARNING: possible amplicon contamination" in stderr.getvalue(),
+                any(int(r["consensus_differences"]) for r in compared),
             )
+            for r in compared:
+                details = r["consensus_difference_details"]
+                self.assertEqual(
+                    len(details.split(";")) if details else 0,
+                    int(r["consensus_differences"]),
+                )
+            for r in overlaps:
+                if not int(r["compared_positions"]):
+                    self.assertEqual(r["consensus_differences"], "NA")
+            first = overlaps[0]
+            self.assertEqual((first["amplicon"], first["next_amplicon"]), ("1", "2"))
             # [342, 385) 0-based is 343-385 1-based inclusive
             self.assertEqual((first["start"], first["end"]), ("343", "385"))
-            positions = read_tsv(f"{prefix}.overlap_positions.tsv")
-            self.assertEqual(len(positions), sum(int(r["length"]) for r in summary))
-            self.assertTrue(any(int(r["evaluable_positions"]) for r in summary))
 
 
 class TestFragmentNormalisation(unittest.TestCase):
