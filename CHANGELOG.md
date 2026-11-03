@@ -15,10 +15,12 @@ This release changes which reads are kept and how paired-end data is normalised,
 - stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and read pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
 - In a terminal: coloured headings, a live progress bar (percentage and time remaining for a BAM file, count and rate for stdin) and the coverage summary as a pre/post-normalisation table. Logs get plain `== Name ==` headings and a `progress:` line every 30 seconds. `NO_COLOR` and `FORCE_COLOR` are respected.
 - `--quiet`/`-q` prints only the coverage summary, QC summary and warnings to stderr.
+- Fragments lying inside two neighbouring amplicons (left primer of amplicon n+1, right primer of amplicon n) are removed as `ambiguous_amplicon` and never counted against either amplicon. `overlaps.tsv` gives the count for each overlap.
 - `--rejected-output FILE` writes the reads that were removed, untrimmed, to a separate SAM/BAM file, each tagged `ZR:Z:<reason>` with the same reasons as the QC summary. See [rejected reads](docs/outputs.md#rejected-reads).
 
 ### Changed
 
+- With `--allow-incorrect-pairs`, fragments lying inside two neighbouring amplicons are now removed. Previously they were kept, trimmed and normalised as amplicon n+1.
 - **Breaking:** the `--primer-match-threshold` default is now 5 (previously 35). Reads with an end more than 5 bases outside their primer's 5' end, i.e. containing genomic sequence beyond the amplicon, are no longer assigned to that primer. On the paired-end test data this removes about 0.4% of read pairs; single-end ONT test output is unchanged.
 - **Breaking:** `--normalise` counts paired-end data in fragments (a read pair counts once where its mates overlap), so paired-end output at the same `-n` is roughly double the size of previous versions.
 - **Breaking:** the `--amp-depth-report` column `mean_depth` is renamed `mean_fragment_depth`.
@@ -27,6 +29,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 
 ### Fixed
 
+- A read ending exactly `--primer-match-threshold` bases past its right primer's 5' end was given the next amplicon's right primer and removed as mismatched, and a read ending at the last base of a reference matched no right primer. Right ends are now matched within the threshold, as left ends already were.
 - `--amp-depth-report` for paired-end data without `--normalise` counted only one mate of each pair.
 - Supplementary and secondary alignments could be paired in place of the real mate for paired-end data, and secondary alignments were written for single-end data.
 - Reads where primer trimming would produce an invalid CIGAR (e.g. an indel inside the primer) were written with their start position moved but the CIGAR unchanged. They are now dropped.

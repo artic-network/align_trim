@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import csv
 import io
 import pathlib
@@ -17,8 +18,10 @@ from primalbedtools.scheme import Scheme
 from align_trim.console import console
 from align_trim.main import (
     create_primer_lookup,
+    find_primer_with_lookup,
     fragment_spans,
     go,
+    handle_segments,
     read_pair_generator,
     trim,
 )
@@ -40,6 +43,7 @@ from tests.test_integration import (
     BAM_PATH_PAIRED_V3_0_0,
     BAM_PATH_V5_3_2,
     BED_PATH_V3_0_0,
+    BED_PATH_V5_3_2,
     create_args,
 )
 
@@ -499,7 +503,7 @@ class TestQCIntegration(unittest.TestCase):
                 )
                 self.assertEqual(
                     int(summary["removed_mismatched_primers"])
-                    + int(summary["removed_partial_in_overlap"]),
+                    + int(summary["removed_ambiguous_amplicon"]),
                     mismatched,
                 )
 
@@ -828,6 +832,102 @@ class TestRejectedOutput(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     self.run_go(tempdir, "out", rejected_output=pathlib.Path(path))
                 self.assertEqual(cm.exception.code, 1)
+
+
+def v532(padding=5, ref_len=29903):
+    scheme = Scheme.from_file(str(BED_PATH_V5_3_2))
+    bedlines = list(scheme.bedlines)
+    amplicons = create_amplicons(merge_primers(scheme.bedlines))
+    lookup = create_primer_lookup([(CHROM, ref_len)], amplicons, padding)
+    return amplicons, lookup, QC(amplicons, lookup, bedlines, 20, padding)
+
+
+class TestRightEndLookup(unittest.TestCase):
+    """A right end within the threshold of its primer's 5' end matches it, as on the left"""
+
+    def test_threshold_is_inclusive_on_both_sides(self):
+        amplicons, lookup, _ = v532()
+        amp1 = amplicons[0]  # LEFT 47-78, RIGHT 419-447
+        right = find_primer_with_lookup(lookup, amp1.amplicon_end + 5, "-", CHROM)
+        left = find_primer_with_lookup(lookup, amp1.amplicon_start - 5, "+", CHROM)
+        self.assertEqual((left.amplicon_number, right.amplicon_number), (1, 1))
+        beyond = find_primer_with_lookup(lookup, amp1.amplicon_end + 6, "-", CHROM)
+        self.assertNotEqual(beyond.amplicon_number, 1)
+
+    def test_read_ending_at_the_reference_end(self):
+        amplicons, _, _ = v532()
+        last = amplicons[-1]
+        _, lookup, _ = v532(ref_len=last.amplicon_end)
+        p = find_primer_with_lookup(lookup, last.amplicon_end, "-", CHROM)
+        self.assertEqual(p.amplicon_number, last.amplicon_number)
+
+
+class TestAmbiguousAmplicon(unittest.TestCase):
+    """Fragments inside two neighbouring amplicons are not assigned to either"""
+
+    def handle(self, seg, **kwargs):
+        amplicons, lookup, qc = v532()
+        rejected = FakeWriter()
+        amp_depths = {
+            CHROM: {
+                a.amplicon_number: np.zeros(
+                    a.amplicon_end - a.amplicon_start, dtype=int
+                )
+                for a in amplicons
+            }
+        }
+        result = handle_segments(
+            segment=seg,
+            lookup=lookup,
+            args=create_args(**kwargs),
+            min_mapq=20,
+            outfile_writer=FakeWriter(),
+            amp_depths=amp_depths,
+            qc=qc,
+            rejected=rejected,
+            originals=(copy.copy(seg),),
+        )
+        return result, qc, rejected
+
+    def assert_ambiguous(self, seg, **kwargs):
+        result, qc, rejected = self.handle(seg, **kwargs)
+        self.assertFalse(result)
+        self.assertEqual(qc.unassigned["ambiguous_amplicon"], 1)
+        self.assertEqual(sum(sum(counts.values()) for counts in qc.fates.values()), 0)
+        self.assertEqual(qc.ambiguous, Counter({(CHROM, 1): 1}))
+        self.assertEqual(
+            [r.get_tag("ZR") for r in rejected.records], ["ambiguous_amplicon"]
+        )
+
+    def test_partial_read_in_overlap(self):
+        # 354-447 (1-based): ends at RIGHT_1, starts inside LEFT_2, so lies inside amplicons 1 and 2
+        for allow in (False, True):
+            seg = make_segment(353, "94M26S", reverse=True)
+            self.assert_ambiguous(seg, allow_incorrect_pairs=allow)
+
+    def test_overlap_product(self):
+        # both ends at LEFT_2 / RIGHT_1
+        for allow in (False, True):
+            self.assert_ambiguous(
+                make_segment(344, "103M"), allow_incorrect_pairs=allow
+            )
+
+    def test_counted_per_overlap(self):
+        _, _, qc = v532()
+        qc.ambiguous[(CHROM, 1)] = 3
+        # 67/68 only overlap within their primers, so have no comparison region
+        qc.ambiguous[(CHROM, 67)] = 2
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-amb") as tempdir:
+            path = f"{tempdir}/overlaps.tsv"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                qc._write_overlaps(path)
+            rows = {(r["amplicon"], r["next_amplicon"]): r for r in read_tsv(path)}
+        self.assertEqual(rows[("1", "2")]["ambiguous_fragments"], "3")
+        self.assertEqual(rows[("2", "3")]["ambiguous_fragments"], "0")
+        self.assertEqual(rows[("67", "68")]["ambiguous_fragments"], "2")
+        self.assertEqual(rows[("67", "68")]["start"], "NA")
+        self.assertIn("5 fragments lie inside two amplicons", stderr.getvalue())
 
 
 if __name__ == "__main__":

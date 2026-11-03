@@ -26,7 +26,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 ### Primer and read handling
 
 - `--no-trim-primers` : Do not trim primers from reads (by default, primers are trimmed)
-- `--allow-incorrect-pairs` : Allow reads to be assigned to amplicons even if primers are not correctly paired
+- `--allow-incorrect-pairs` : Allow reads to be assigned to amplicons even if primers are not correctly paired. Reads lying inside two neighbouring amplicons (left primer of amplicon n+1, right primer of amplicon n) are still removed, as they cannot be assigned to either
 - `--require-full-length` : Require all reads to start and stop in primer sites (do not use with rapid barcoding)
 
 ### Output and reporting

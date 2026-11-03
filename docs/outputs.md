@@ -38,7 +38,7 @@ Genome coverage counts reads, matching `samtools depth`, so where paired mates o
 
 - Every primary record is in exactly one of the two files: read pairs are written together, so a read name is never split between them.
 - Records are written as they were read in, untrimmed, with their input tags and the input header (plus an align_trim `@PG` line).
-- Each record has a `ZR:Z:<reason>` tag. The reasons are the same as the `removed_<reason>` columns of the [QC summary](qc-reports.md#prefixsummarytsv) (`unmapped`, `not_proper_pair`, `missing_mate`, `low_mapq`, `no_alignment`, `no_primer_match`, `partial_in_overlap`, `mismatched_primers`, `trim_failed`, `primer_only`, `not_full_length`, `by_normalise`), and the counts match.
+- Each record has a `ZR:Z:<reason>` tag. The reasons are the same as the `removed_<reason>` columns of the [QC summary](qc-reports.md#prefixsummarytsv) (`unmapped`, `not_proper_pair`, `missing_mate`, `low_mapq`, `no_alignment`, `no_primer_match`, `ambiguous_amplicon`, `mismatched_primers`, `trim_failed`, `primer_only`, `not_full_length`, `by_normalise`), and the counts match.
 - Supplementary and secondary alignments are not written to either file.
 - With `--normalise`, most rejected reads are usually `by_normalise`, which makes the file large and the run slower (about a quarter longer for a 1.6M-record paired-end run at `-n 200`).
 - Single-end output stays in input order. Paired-end output is written as each pair completes, with unpaired mates at the end, so the header is `SO:unsorted`: run `samtools sort` before indexing.
@@ -46,5 +46,5 @@ Genome coverage counts reads, matching `samtools depth`, so where paired mates o
 To pull out the reads removed for one reason:
 
 ```bash
-samtools view -b -d ZR:partial_in_overlap rejected.bam > partial_in_overlap.bam
+samtools view -b -d ZR:ambiguous_amplicon rejected.bam > ambiguous_amplicon.bam
 ```

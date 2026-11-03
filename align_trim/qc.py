@@ -22,14 +22,19 @@ PRE_ASSIGNMENT_REASONS = [
 ]
 AMPLICON_REASONS = [
     "no_primer_match",
-    "partial_in_overlap",
     "mismatched_primers",
     "trim_failed",
     "primer_only",
     "not_full_length",
     "by_normalise",
 ]
-REASONS = PRE_ASSIGNMENT_REASONS + AMPLICON_REASONS
+# a fragment inside two neighbouring amplicons (LEFT_n+1 / RIGHT_n) is never assigned to either, so it is only
+# counted in summary.tsv (and per overlap in overlaps.tsv)
+REASONS = (
+    PRE_ASSIGNMENT_REASONS
+    + ["no_primer_match", "ambiguous_amplicon"]
+    + AMPLICON_REASONS[1:]
+)
 
 PAIR_TYPES = [
     "expected",
@@ -332,6 +337,9 @@ class QC:
             outer_ends[a.chrom].update((a.amplicon_start, a.amplicon_end))
         self.outer_ends = {c: np.array(sorted(e)) for c, e in outer_ends.items()}
 
+        # fragments not assigned because they lie inside amplicons n and n+1, keyed (chrom, n)
+        self.ambiguous = Counter()
+
         # overlap windows between adjacent amplicons: [cov_start(n+1), cov_end(n))
         self.windows = []
         self.windows_by_amp = defaultdict(list)
@@ -613,8 +621,8 @@ class QC:
         console.prefixed(
             "QC:",
             f"primer pairs: same amplicon (expected) {t['expected']}; "
-            f"short products of an overlap region {t['overlap_product']}; "
-            f"fragments inside an overlap with ends not at its primers {t['partial_in_overlap']}; "
+            f"inside an overlap, so not assigned to an amplicon: short products of the overlap region "
+            f"{t['overlap_product']}, fragments with ends not at its primers {t['partial_in_overlap']}; "
             f"long products skipping a primer site: same pool {t['long_same_pool']}, "
             f"cross pool {t['long_cross_pool']}; "
             f"between chromosomes {t['cross_chrom']}; other {t['other']}; "
@@ -656,6 +664,7 @@ class QC:
             "start",
             "end",
             "length",
+            "ambiguous_fragments",
             "compared_positions",
             "amplicon_median_depth",
             "next_amplicon_median_depth",
@@ -677,6 +686,7 @@ class QC:
                 "start": w["start"] + 1,
                 "end": w["end"],
                 "length": w["end"] - w["start"],
+                "ambiguous_fragments": self.ambiguous[(w["chrom"], w["amplicon_left"])],
                 "compared_positions": int(compared.sum()),
                 "amplicon_median_depth": round(float(np.median(depth)), 2),
                 "next_amplicon_median_depth": round(float(np.median(next_depth)), 2),
@@ -695,17 +705,36 @@ class QC:
                     for i in np.flatnonzero(differs)
                 )
             else:
-                for field in fields[9:]:
+                for field in fields[fields.index("max_freq_difference") :]:
                     row[field] = "NA"
             rows.append(row)
+
+        # neighbours which only overlap within their primers have no region to compare, but can still have
+        # ambiguous fragments
+        windowed = {(w["chrom"], w["amplicon_left"]) for w in self.windows}
+        for (chrom, n), count in self.ambiguous.items():
+            if (chrom, n) in windowed:
+                continue
+            row = dict.fromkeys(fields, "NA")
+            row.update(
+                chrom=chrom,
+                amplicon=n,
+                next_amplicon=n + 1,
+                ambiguous_fragments=count,
+                compared_positions=0,
+            )
+            rows.append(row)
+        rows.sort(key=lambda r: (r["chrom"], r["amplicon"]))
         _write_tsv(path, fields, rows)
 
         compared_rows = [r for r in rows if r["compared_positions"]]
         differing = sum(1 for r in compared_rows if r["differing_positions"])
         mismatched = [r for r in compared_rows if r["majority_base_differences"]]
+        ambiguous = sum(self.ambiguous.values())
         console.prefixed(
             "QC:",
-            f"amplicon overlaps: {len(compared_rows)} of {len(rows)} had enough depth to compare; "
+            f"amplicon overlaps: {ambiguous} fragments lie inside two amplicons so were not assigned to either; "
+            f"{len(compared_rows)} of {len(rows)} overlaps had enough depth to compare; "
             f"base frequencies differ in {differing}, majority base differs in {len(mismatched)}",
         )
         if mismatched:

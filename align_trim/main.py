@@ -15,7 +15,7 @@ from primalbedtools.bedfiles import BedLine, merge_primers
 from primalbedtools.scheme import Scheme
 
 from align_trim.console import BOLD, bam_fraction, console
-from align_trim.qc import DEFAULT_PRIMER_MATCH_THRESHOLD, QC, classify_primer_pair
+from align_trim.qc import DEFAULT_PRIMER_MATCH_THRESHOLD, QC
 
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
 consumesReference = [True, False, True, True, False, False, False, True, True]
@@ -31,7 +31,12 @@ REJECTED_TAG = "ZR"
 
 
 def find_primer_with_lookup(lookup, pos, direction, chrom) -> Optional[BedLine]:
-    pos_amps = lookup[chrom][:, pos]  # Search both pools for amplicons at this position
+    # a right ("-") end is an exclusive reference_end, so look up the last aligned base, matching the
+    # lookup's [amplicon_start - padding, amplicon_end + padding) span on both sides
+    lookup_pos = pos - 1 if direction == "-" else pos
+    pos_amps = lookup[chrom][
+        :, lookup_pos
+    ]  # Search both pools for amplicons at this position
     closest_dist = float("inf")
     closest_p = None
     if direction == "+":
@@ -440,20 +445,8 @@ def handle_segments(
 
     # check if primers are correctly paired and then assign read group
     correctly_paired = p1.amplicon_number == p2.amplicon_number
-    pair_type = None
     if qc is not None:
-        pair_type = qc.pair(
-            p1, p2, start=left_seg.reference_start, end=right_seg.reference_end
-        )
-    elif rejected is not None and not correctly_paired:
-        # the rejection reason tells partial fragments in an overlap from mismatched primers
-        pair_type = classify_primer_pair(
-            p1,
-            p2,
-            start=left_seg.reference_start,
-            end=right_seg.reference_end,
-            tolerance=args.primer_match_threshold,
-        )
+        qc.pair(p1, p2, start=left_seg.reference_start, end=right_seg.reference_end)
 
     if not paired:
         if not args.no_read_groups:
@@ -495,17 +488,23 @@ def handle_segments(
         }
         report_writer.writerow(report)
 
+    # LEFT_n+1 / RIGHT_n: the fragment lies inside both amplicon n and n+1 and its ends do not show which
+    # it came from, so it is not assigned to either (even with --allow-incorrect-pairs)
+    if p1.chrom == p2.chrom and p2.amplicon_number - p1.amplicon_number == -1:
+        if args.verbose:
+            console.debug(
+                f"{(segment if not paired else segment1).query_name}: skipped as it lies inside amplicons "
+                f"{p2.amplicon_number} and {p1.amplicon_number} and its ends do not place it in one"
+            )
+        if qc is not None:
+            qc.ambiguous[(chrom, p2.amplicon_number)] += 1
+        return skip("ambiguous_amplicon", chrom)
+
     if not args.allow_incorrect_pairs and not correctly_paired:
         segment = segment if not paired else segment1
         if args.verbose:
             console.debug(f"{segment.query_name}: skipped as not correctly paired")
-        return skip(
-            "partial_in_overlap"
-            if pair_type == "partial_in_overlap"
-            else "mismatched_primers",
-            chrom,
-            amplicon,
-        )
+        return skip("mismatched_primers", chrom, amplicon)
 
     # get the primer positions
     if not args.no_trim_primers:
@@ -1342,7 +1341,7 @@ def main():
     parser.add_argument(
         "--allow-incorrect-pairs",
         action="store_true",
-        help="Allow reads to be assigned to amplicons even if the primers are not correctly paired, i.e. primer1 and primer2 are not from the same amplicon.",
+        help="Allow reads to be assigned to amplicons even if the primers are not correctly paired, i.e. primer1 and primer2 are not from the same amplicon. Reads lying inside two neighbouring amplicons are still removed, as they cannot be assigned to either.",
     )
     parser.add_argument(
         "--require-full-length",

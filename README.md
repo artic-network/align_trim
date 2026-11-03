@@ -44,7 +44,7 @@ align_trim primer.bed --samfile input.bam --output trimmed.bam \
 | `--normalise N`, `-n` | keep reads until each amplicon reaches a depth of N fragments (a read pair counts once). 0 turns it off (default) |
 | `--min-mapq`, `-m` | minimum mapping quality (default: 20) |
 | `--primer-match-threshold`, `-p` | how far, in bases, a read end can be from a primer and still match it (default: 5) |
-| `--allow-incorrect-pairs` | keep reads whose two ends match primers from different amplicons |
+| `--allow-incorrect-pairs` | keep reads whose two ends match primers from different amplicons (reads inside two neighbouring amplicons are still removed) |
 | `--require-full-length` | only keep reads spanning a whole amplicon (not for rapid barcoding or other fragmented libraries) |
 | `--no-trim-primers` | assign reads but leave primers untrimmed |
 | `--qc-prefix PREFIX` | write the amplicon QC reports as `PREFIX.<name>.tsv` |
