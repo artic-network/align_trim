@@ -35,6 +35,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 - `--amp-depth-report`, `-a` : Output mean fragment depth for each amplicon as TSV to specified filepath. See [outputs](outputs.md#amplicon-depth-report)
 - `--genome-coverage-report`, `-g` : Output per-position genome coverage TSV(s) using the given prefix. Summary statistics (% genome covered at >=1x, >=10x, >=20x, >=100x, >=1000x) are printed to stderr. See [outputs](outputs.md#genome-coverage-report)
 - `--qc-prefix` : Output amplicon QC reports as `PREFIX.<name>.tsv`, with a one line summary per report printed to stderr. See [QC reports](qc-reports.md)
+- `--rejected-output FILE` : Also write the reads which were removed to FILE (.bam or .sam), as they were read in (untrimmed) and tagged with the reason. See [outputs](outputs.md#rejected-reads)
 - `--no-read-groups` : Do not divide reads into pool-based read groups in SAM/BAM output
 
 ### General
@@ -95,6 +96,12 @@ align_trim primer.bed --samfile input.bam --normalise 100 \
 ### Amplicon QC reports
 ```bash
 align_trim primer.bed --samfile input.bam --qc-prefix sample1 --output trimmed.bam
+```
+
+### Keep the rejected reads
+```bash
+align_trim primer.bed --samfile input.bam --output trimmed.bam \
+  --rejected-output rejected.bam
 ```
 
 ### Process from stdin with verbose output

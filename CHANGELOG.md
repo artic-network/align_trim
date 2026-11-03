@@ -15,6 +15,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 - stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and read pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
 - In a terminal: coloured headings, a live progress bar (percentage and time remaining for a BAM file, count and rate for stdin) and the coverage summary as a pre/post-normalisation table. Logs get plain `== Name ==` headings and a `progress:` line every 30 seconds. `NO_COLOR` and `FORCE_COLOR` are respected.
 - `--quiet`/`-q` prints only the coverage summary, QC summary and warnings to stderr.
+- `--rejected-output FILE` writes the reads that were removed, untrimmed, to a separate SAM/BAM file, each tagged `ZR:Z:<reason>` with the same reasons as the QC summary. See [rejected reads](docs/outputs.md#rejected-reads).
 
 ### Changed
 

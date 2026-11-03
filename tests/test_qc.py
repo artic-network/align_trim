@@ -6,7 +6,7 @@ import random
 import statistics
 import tempfile
 import unittest
-from collections import namedtuple
+from collections import Counter, namedtuple
 
 import numpy as np
 import pysam
@@ -656,6 +656,178 @@ class TestFragmentNormalisation(unittest.TestCase):
             keep_all = self.amp_depths(tempdir, 1_000_000)
             for amplicon, depth in no_norm.items():
                 self.assertAlmostEqual(depth, keep_all[amplicon], places=6)
+
+
+def primary_records(path):
+    return [
+        r
+        for r in pysam.AlignmentFile(str(path))
+        if not (r.is_supplementary or r.is_secondary)
+    ]
+
+
+class FakeWriter:
+    def __init__(self):
+        self.records = []
+
+    def write(self, record):
+        self.records.append(record)
+
+
+class TestRejectedOutput(unittest.TestCase):
+    RUNS = (
+        {"normalise": 0},
+        {"normalise": 20},
+        {"normalise": 0, "bedfile": BED_PATH_V3_0_0, "samfile": BAM_PATH_PAIRED_V3_0_0},
+        {
+            "normalise": 200,
+            "bedfile": BED_PATH_V3_0_0,
+            "samfile": BAM_PATH_PAIRED_V3_0_0,
+        },
+    )
+
+    def run_go(self, tempdir, name, **kwargs):
+        out = pathlib.Path(tempdir) / f"{name}.sam"
+        with contextlib.redirect_stderr(io.StringIO()):
+            go(create_args(output=out.absolute(), **kwargs))
+        return out
+
+    def test_every_fragment_kept_or_rejected(self):
+        for kwargs in self.RUNS:
+            samfile = kwargs.get("samfile", create_args().samfile)
+            with tempfile.TemporaryDirectory(
+                dir="tests", suffix="-rejected"
+            ) as tempdir:
+                rejected_path = f"{tempdir}/rejected.bam"
+                out = self.run_go(
+                    tempdir,
+                    "out",
+                    qc_prefix=f"{tempdir}/qc",
+                    rejected_output=rejected_path,
+                    **kwargs,
+                )
+                inputs = primary_records(samfile)
+                kept = list(pysam.AlignmentFile(str(out)))
+                rejected = list(pysam.AlignmentFile(rejected_path))
+
+                # every primary input record is in exactly one of the two files
+                key = lambda r: (r.query_name, r.flag)  # noqa: E731
+                self.assertEqual(
+                    Counter(map(key, inputs)),
+                    Counter(map(key, kept)) + Counter(map(key, rejected)),
+                    kwargs,
+                )
+                self.assertFalse(
+                    {r.query_name for r in kept} & {r.query_name for r in rejected}
+                )
+                self.assertFalse(
+                    any(r.is_supplementary or r.is_secondary for r in rejected)
+                )
+
+                # one fragment per read name, counted under the same reasons as the QC summary
+                reasons = Counter(
+                    dict((r.query_name, r.get_tag("ZR")) for r in rejected).values()
+                )
+                (summary,) = read_tsv(f"{tempdir}/qc.summary.tsv")
+                self.assertEqual(
+                    {r: reasons[r] for r in REASONS},
+                    {r: int(summary[f"removed_{r}"]) for r in REASONS},
+                    kwargs,
+                )
+
+                # written as read in, apart from the reason tag
+                originals = {key(r): r.to_string() for r in inputs}
+                for r in rejected:
+                    r.set_tag("ZR", None)
+                    self.assertEqual(r.to_string(), originals[key(r)])
+
+                # the same reasons without --qc-prefix
+                self.run_go(
+                    tempdir,
+                    "no_qc",
+                    rejected_output=f"{tempdir}/no_qc.rejected.sam",
+                    **kwargs,
+                )
+                self.assertEqual(
+                    Counter(
+                        r.get_tag("ZR")
+                        for r in pysam.AlignmentFile(f"{tempdir}/no_qc.rejected.sam")
+                    ),
+                    Counter(
+                        r.get_tag("ZR") for r in pysam.AlignmentFile(rejected_path)
+                    ),
+                )
+
+    def test_output_unchanged(self):
+        for kwargs in self.RUNS:
+            with tempfile.TemporaryDirectory(
+                dir="tests", suffix="-rejected"
+            ) as tempdir:
+                plain = self.run_go(tempdir, "plain", **kwargs)
+                with_rejected = self.run_go(
+                    tempdir,
+                    "with",
+                    rejected_output=f"{tempdir}/rejected.bam",
+                    **kwargs,
+                )
+                self.assertEqual(records(plain), records(with_rejected), kwargs)
+
+    def test_header(self):
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-rejected") as tempdir:
+            path = f"{tempdir}/rejected.sam"
+            self.run_go(
+                tempdir,
+                "out",
+                rejected_output=path,
+                bedfile=BED_PATH_V3_0_0,
+                samfile=BAM_PATH_PAIRED_V3_0_0,
+            )
+            header = pysam.AlignmentFile(path).header.to_dict()
+            self.assertEqual(header["HD"]["SO"], "unsorted")
+            self.assertEqual(header["PG"][-1]["ID"], "align_trim")
+
+    def test_read_pair_generator(self):
+        def mate(name, start, read1, proper=True, unmapped=False, supplementary=False):
+            seg = make_segment(start, "50M", name=name, reverse=not read1)
+            seg.is_paired = True
+            seg.is_read1, seg.is_read2 = read1, not read1
+            seg.is_proper_pair = proper
+            seg.is_unmapped = unmapped
+            seg.is_supplementary = supplementary
+            return seg
+
+        reads = [
+            mate("proper", 100, True),
+            mate("proper", 200, False),
+            mate("proper", 5000, True, supplementary=True),
+            mate("improper", 300, True, proper=False),
+            mate("improper", 9000, False, proper=False),
+            mate("unmapped", 400, True, proper=False),
+            mate("unmapped", 400, False, proper=False, unmapped=True),
+            mate("orphan", 500, True),
+        ]
+        writer = FakeWriter()
+        pairs = list(read_pair_generator(reads, rejected=writer))
+        self.assertEqual([p[0].query_name for p in pairs], ["proper"])
+        self.assertEqual(
+            [(r.query_name, r.get_tag("ZR")) for r in writer.records],
+            [
+                ("improper", "not_proper_pair"),
+                ("improper", "not_proper_pair"),
+                ("unmapped", "unmapped"),
+                ("unmapped", "unmapped"),
+                ("orphan", "missing_mate"),
+            ],
+        )
+
+    def test_invalid_path(self):
+        for path in ("-", "rejected.txt"):
+            with tempfile.TemporaryDirectory(
+                dir="tests", suffix="-rejected"
+            ) as tempdir:
+                with self.assertRaises(SystemExit) as cm:
+                    self.run_go(tempdir, "out", rejected_output=pathlib.Path(path))
+                self.assertEqual(cm.exception.code, 1)
 
 
 if __name__ == "__main__":
