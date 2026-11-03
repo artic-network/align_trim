@@ -273,6 +273,19 @@ def overlap_stats(left, right):
     return left_depth, right_depth, af_diff, evaluable, left_major, right_major
 
 
+def base_frequencies(counts):
+    """Relative frequency of each base (A, C, G, T, DEL) at one position, most common first, as `C=0.95,T=0.05`.
+
+    Bases below 0.01 are left out.
+    """
+    depth = counts[ALLELE_COLS].sum()
+    freqs = sorted(
+        ((COUNT_COLS[c], counts[c] / depth) for c in ALLELE_COLS),
+        key=lambda x: -x[1],
+    )
+    return ",".join(f"{base}={freq:.2f}" for base, freq in freqs if freq >= 0.005)
+
+
 def _write_tsv(path, fieldnames, rows):
     with open(path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
@@ -649,8 +662,8 @@ class QC:
             "max_freq_difference",
             "max_freq_difference_pos",
             "differing_positions",
-            "consensus_differences",
-            "consensus_difference_details",
+            "majority_base_differences",
+            "majority_base_difference_details",
         ]
         rows = []
         for w in self.windows:
@@ -676,9 +689,9 @@ class QC:
                 row["differing_positions"] = int(
                     (compared & (freq_diff >= OVERLAP_AF_THRESHOLD)).sum()
                 )
-                row["consensus_differences"] = int(differs.sum())
-                row["consensus_difference_details"] = ";".join(
-                    f"{w['start'] + i + 1}:{major[i]}/{next_major[i]}"
+                row["majority_base_differences"] = int(differs.sum())
+                row["majority_base_difference_details"] = ";".join(
+                    f"{w['start'] + i + 1}:{base_frequencies(w['left'][i])}/{base_frequencies(w['right'][i])}"
                     for i in np.flatnonzero(differs)
                 )
             else:
@@ -689,21 +702,21 @@ class QC:
 
         compared_rows = [r for r in rows if r["compared_positions"]]
         differing = sum(1 for r in compared_rows if r["differing_positions"])
-        mismatched = [r for r in compared_rows if r["consensus_differences"]]
+        mismatched = [r for r in compared_rows if r["majority_base_differences"]]
         console.prefixed(
             "QC:",
             f"amplicon overlaps: {len(compared_rows)} of {len(rows)} had enough depth to compare; "
-            f"base frequencies differ in {differing}, consensus base differs in {len(mismatched)}",
+            f"base frequencies differ in {differing}, majority base differs in {len(mismatched)}",
         )
         if mismatched:
             listed = ", ".join(
-                f"{r['amplicon']}/{r['next_amplicon']} ({r['consensus_differences']} "
-                f"position{'s' if r['consensus_differences'] > 1 else ''})"
+                f"{r['amplicon']}/{r['next_amplicon']} ({r['majority_base_differences']} "
+                f"position{'s' if r['majority_base_differences'] > 1 else ''})"
                 for r in mismatched
             )
             warning = (
-                "possible amplicon contamination: consensus base differs between overlapping "
-                f"amplicons {listed}; see {path}"
+                f"majority base differs between overlapping amplicons {listed}, "
+                f"which can indicate contamination; see {path}"
             )
             console.defer_warning(warning)
             return warning

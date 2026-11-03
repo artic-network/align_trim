@@ -250,7 +250,9 @@ class TestSections(ConsoleTestCase):
             # the test data has no contamination, so add a QC warning
             def with_warning(qc, path):
                 write_overlaps(qc, path)
-                console.defer_warning("possible amplicon contamination: test")
+                console.defer_warning(
+                    "majority base differs between overlapping amplicons test"
+                )
 
             with mock.patch.object(QC, "_write_overlaps", with_warning):
                 with contextlib.redirect_stderr(stderr):
@@ -273,7 +275,9 @@ class TestSections(ConsoleTestCase):
         self.assertIn("Pre-normalisation:   >= 1x: ", out)
         self.assertIn("Post-normalisation: Genome coverage summary", out)
         self.assertIn("QC: split reads: ", out)
-        self.assertIn("WARNING: possible amplicon contamination: test", out)
+        self.assertIn(
+            "WARNING: majority base differs between overlapping amplicons test", out
+        )
 
     def test_quiet_keeps_summaries(self):
         out = self.run_go(quiet=True)

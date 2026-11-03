@@ -51,7 +51,7 @@ The trimmed SAM/BAM is the only thing written to stdout. Everything else goes to
 1. `Run`: version, input, scheme and output, progress while reads are processed, then one completion line (records, read pairs, time and rate)
 2. `Coverage`: with `--genome-coverage-report`
 3. `QC summary`: with `--qc-prefix`
-4. `Warnings`: e.g. possible amplicon contamination, or how many fragments were skipped because primer soft masking failed
+4. `Warnings`: e.g. a majority base difference between overlapping amplicons, or how many fragments were skipped because primer soft masking failed
 
 In a terminal, headings are coloured rules and a live progress bar shows the percentage done and time remaining for a BAM file, or a count and rate when reading from stdin. The live bar is not shown with `--verbose`, or when SAM is written to the same terminal.
 
@@ -74,7 +74,7 @@ Pre-normalisation: Genome coverage summary
 QC: 800518 fragments, 41236 kept (5.15%); ...
 ...
 == Warnings ==
-WARNING: possible amplicon contamination: ...
+WARNING: majority base differs between overlapping amplicons ..., which can indicate contamination; see sample1.overlaps.tsv
 ```
 
 ## Examples

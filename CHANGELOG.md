@@ -11,7 +11,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 ### Added
 
 - `--qc-prefix PREFIX` writes five amplicon QC reports: a run summary, per-amplicon fragment fates, primer pair combinations, split (supplementary) alignments and concordance between overlapping amplicons. A one-line summary of each is printed to stderr. The trimmed output is unchanged by this option. See [QC reports](docs/qc-reports.md).
-- A `WARNING: possible amplicon contamination` line on stderr when the consensus base differs between two overlapping amplicons.
+- A warning on stderr when the majority base differs between two overlapping amplicons, which can indicate contamination.
 - stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and read pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
 - In a terminal: coloured headings, a live progress bar (percentage and time remaining for a BAM file, count and rate for stdin) and the coverage summary as a pre/post-normalisation table. Logs get plain `== Name ==` headings and a `progress:` line every 30 seconds. `NO_COLOR` and `FORCE_COLOR` are respected.
 - `--quiet`/`-q` prints only the coverage summary, QC summary and warnings to stderr.

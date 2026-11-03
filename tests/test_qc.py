@@ -25,6 +25,7 @@ from align_trim.main import (
 from align_trim.qc import (
     AMPLICON_REASONS,
     QC,
+    base_frequencies,
     REASONS,
     breakpoint_positions,
     classify_primer_pair,
@@ -353,6 +354,37 @@ class TestOverlapCounting(unittest.TestCase):
         self.assertEqual(right_major[1], "T")
 
 
+class TestBaseFrequencies(unittest.TestCase):
+    def test_most_common_first(self):
+        counts = np.array([5, 15, 0, 0, 0, 0, 3])  # A C G T N DEL INS
+        self.assertEqual(base_frequencies(counts), "C=0.75,A=0.25")
+
+    def test_deletions_counted_and_n_ignored(self):
+        counts = np.array([0, 0, 0, 9, 4, 1, 0])
+        self.assertEqual(base_frequencies(counts), "T=0.90,DEL=0.10")
+
+    def test_rare_bases_left_out(self):
+        counts = np.array([999, 0, 1, 0, 0, 0, 0])
+        self.assertEqual(base_frequencies(counts), "A=1.00")
+
+    def test_details_column(self):
+        qc = v3_qc()
+        window = qc.windows[0]
+        window["left"][0, 0], window["left"][0, 3] = 18, 2  # A 0.9, T 0.1
+        window["right"][0, 3], window["right"][0, 0] = 15, 5  # T 0.75, A 0.25
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-freq") as tempdir:
+            path = f"{tempdir}/overlaps.tsv"
+            with contextlib.redirect_stderr(io.StringIO()):
+                console.reset()
+                qc._write_overlaps(path)
+            row = read_tsv(path)[0]
+        self.assertEqual(row["majority_base_differences"], "1")
+        self.assertEqual(
+            row["majority_base_difference_details"],
+            f"{int(row['start'])}:A=0.90,T=0.10/T=0.75,A=0.25",
+        )
+
+
 class TestContaminationWarning(unittest.TestCase):
     def write_overlaps(self, qc):
         stderr = io.StringIO()
@@ -370,7 +402,8 @@ class TestContaminationWarning(unittest.TestCase):
         window["left"][0, 0] = 20  # A
         window["right"][0, 1] = 20  # C
         out = self.write_overlaps(qc)
-        self.assertIn("WARNING: possible amplicon contamination", out)
+        self.assertIn("WARNING: majority base differs", out)
+        self.assertIn("which can indicate contamination", out)
         self.assertIn("1/2", out)
 
     def test_no_warning_when_concordant(self):
@@ -578,20 +611,20 @@ class TestQCIntegration(unittest.TestCase):
             overlaps = read_tsv(f"{prefix}.overlaps.tsv")
             compared = [r for r in overlaps if int(r["compared_positions"])]
             self.assertTrue(compared)
-            # the contamination warning is printed exactly when an overlap has a consensus difference
+            # the warning is printed exactly when an overlap has a majority base difference
             self.assertEqual(
-                "WARNING: possible amplicon contamination" in stderr.getvalue(),
-                any(int(r["consensus_differences"]) for r in compared),
+                "WARNING: majority base differs" in stderr.getvalue(),
+                any(int(r["majority_base_differences"]) for r in compared),
             )
             for r in compared:
-                details = r["consensus_difference_details"]
+                details = r["majority_base_difference_details"]
                 self.assertEqual(
                     len(details.split(";")) if details else 0,
-                    int(r["consensus_differences"]),
+                    int(r["majority_base_differences"]),
                 )
             for r in overlaps:
                 if not int(r["compared_positions"]):
-                    self.assertEqual(r["consensus_differences"], "NA")
+                    self.assertEqual(r["majority_base_differences"], "NA")
             first = overlaps[0]
             self.assertEqual((first["amplicon"], first["next_amplicon"]), ("1", "2"))
             # [342, 385) 0-based is 343-385 1-based inclusive
