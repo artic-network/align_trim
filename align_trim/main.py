@@ -15,16 +15,19 @@ from primalbedtools.bedfiles import BedLine, merge_primers
 from primalbedtools.scheme import Scheme
 
 from align_trim.console import BOLD, bam_fraction, console
-from align_trim.qc import DEFAULT_PRIMER_MATCH_THRESHOLD, QC
+from align_trim.qc import (
+    DEFAULT_PRIMER_MATCH_THRESHOLD,
+    MATCH_OPS,
+    OVERLAP_PAIR_TYPES,
+    QC,
+    classify_primer_pair,
+)
 
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
 consumesReference = [True, False, True, True, False, False, False, True, True]
 
 # consumesQuery lookup for if a CIGAR operation consumes the query sequence
 consumesQuery = [True, True, False, False, True, False, False, True, True]
-
-# CIGAR operations which align a query base to a reference base (M, =, X)
-matchOps = (0, 7, 8)
 
 # tag giving the reason on each record in the --rejected-output file
 REJECTED_TAG = "ZR"
@@ -134,6 +137,7 @@ def trim(segment, primer_pos, end, verbose=False):
 
     # process the CIGAR to determine how much softmasking is required
     eaten = 0
+    exhausted = False
     while 1:
         # chomp CIGAR operations from the start/end of the CIGAR
         try:
@@ -148,6 +152,7 @@ def trim(segment, primer_pos, end, verbose=False):
                 console.debug(
                     f"{segment.query_name}: Ran out of cigar during soft masking - completely masked read will be ignored"
                 )
+            exhausted = True
             break
 
         # if the CIGAR operation consumes the reference sequence, increment/decrement the position by the CIGAR operation length
@@ -162,10 +167,16 @@ def trim(segment, primer_pos, end, verbose=False):
             eaten += length
 
         # stop processing the CIGAR if we've gone far enough to mask the primer
-        if not end and pos >= primer_pos and flag in matchOps:
+        if not end and pos >= primer_pos and flag in MATCH_OPS:
             break
-        if end and pos <= primer_pos and flag in matchOps:
+        if end and pos <= primer_pos and flag in MATCH_OPS:
             break
+
+    # the whole alignment lies inside the primer, so soft mask all of it (no matches are left, so it is dropped as
+    # primer_only) rather than adding back matches over primer bases
+    if exhausted or (not cigar and pos == primer_pos):
+        segment.cigartuples = [(4, eaten)]
+        return
 
     # calculate how many extra matches are needed in the CIGAR
     extra = abs(pos - primer_pos)
@@ -187,30 +198,34 @@ def trim(segment, primer_pos, end, verbose=False):
         if verbose:
             console.debug(f"{segment.query_name}: New pos - {segment.pos}")
 
-        # if proposed softmask leads straight into a deletion, shuffle leftmost mapping base along and ignore the deletion
-        if cigar[0][0] == 2:
+        # if proposed softmask leads straight into an indel, ignore it: shuffle leftmost mapping base along past a
+        # deletion, and add an insertion's bases to the softmask
+        while cigar and cigar[0][0] in (1, 2):
+            flag, length = cigar.pop(0)
             if verbose:
                 console.debug(
-                    f"{segment.query_name}: softmask created a leading deletion in the CIGAR, shuffling the alignment"
+                    f"{segment.query_name}: softmask created a leading {'insertion' if flag == 1 else 'deletion'} in the CIGAR, removing it"
                 )
-            while 1:
-                if cigar[0][0] != 2:
-                    break
-                _, length = cigar.pop(0)
+            if flag == 2:
                 segment.pos += length
+            else:
+                eaten += length
 
         # now add the leading softmask
         cigar.insert(0, (4, eaten))
 
     # softmask the right primer
     else:
-        # if proposed softmask leads straight out of a deletion, drop the trailing deletion (the reference end moves left with it)
-        while cigar and cigar[-1][0] == 2:
+        # if proposed softmask leads straight out of an indel, ignore it: drop a deletion (the reference end moves left
+        # with it), and add an insertion's bases to the softmask
+        while cigar and cigar[-1][0] in (1, 2):
+            flag, length = cigar.pop()
             if verbose:
                 console.debug(
-                    f"{segment.query_name}: softmask created a trailing deletion in the CIGAR, removing it"
+                    f"{segment.query_name}: softmask created a trailing {'insertion' if flag == 1 else 'deletion'} in the CIGAR, removing it"
                 )
-            cigar.pop()
+            if flag == 1:
+                eaten += length
 
         cigar.append((4, eaten))
 
@@ -286,11 +301,10 @@ def handle_segments(
     min_mapq: int,
     outfile_writer: pysam.AlignmentFile,
     amp_depths: dict,
-    report_writer: csv.DictWriter = False,  # type: ignore
+    report_writer: Optional[csv.DictWriter] = None,
     genome_coverage: Optional[dict] = None,
     qc=None,
     rejected: Optional[pysam.AlignmentFile] = None,
-    originals: tuple = (),
 ):
     """Handle the alignment segment(s) including filtering, soft masking, and reporting.
 
@@ -301,16 +315,17 @@ def handle_segments(
         args (argparse.Namespace): The command line arguments
         qc (align_trim.qc.QC | None): QC report accumulator, None if --qc-prefix was not given
         rejected (pysam.AlignmentFile | None): --rejected-output file, None if not given
-        originals (tuple): untrimmed copies of the segment(s), written to rejected if the fragment is removed
 
     Returns:
-        tuple [int, pysam.AlignedSegment | bool, bool] | bool: A tuple containing the amplicon number, the alignment segment and whether the primers were correctly paired, or False if the segment is to be skipped
+        tuple [int, pysam.AlignedSegment | bool, bool, tuple] | bool: A tuple containing the amplicon number, the alignment segment, whether the primers were correctly paired and the segment(s) as read in (for the rejected file, empty if not given), or False if the segment is to be skipped
     """
 
     def skip(fate, chrom=None, amplicon=None):
         return _skip(qc, fate, chrom, amplicon, rejected, originals)
 
     paired = isinstance(segment, tuple)
+    # records written to the rejected file, copied before the first change so they are written as read in
+    originals = segment if paired else (segment,)
     if paired:
         segment1, segment2 = segment
         if not segment1 or not segment2:
@@ -421,7 +436,17 @@ def handle_segments(
     # check if primers are correctly paired and then assign read group
     correctly_paired = p1.amplicon_number == p2.amplicon_number
     if qc is not None:
-        qc.pair(p1, p2, start=left_seg.reference_start, end=right_seg.reference_end)
+        pair_type = qc.pair(
+            p1, p2, start=left_seg.reference_start, end=right_seg.reference_end
+        )
+    else:
+        pair_type = classify_primer_pair(p1, p2)
+
+    # tagging and trimming change the records in place
+    if rejected is not None:
+        originals = tuple(copy(s) for s in segments)
+    else:
+        originals = ()
 
     if not paired:
         if not args.no_read_groups:
@@ -465,7 +490,7 @@ def handle_segments(
 
     # LEFT_n+1 / RIGHT_n: the fragment lies inside both amplicon n and n+1 and its ends do not show which
     # it came from, so it is not assigned to either (even with --allow-incorrect-pairs)
-    if p1.chrom == p2.chrom and p2.amplicon_number - p1.amplicon_number == -1:
+    if pair_type in OVERLAP_PAIR_TYPES:
         if args.verbose:
             console.debug(
                 f"{(segment if not paired else segment1).query_name}: skipped as it lies inside amplicons "
@@ -519,7 +544,7 @@ def handle_segments(
                 return skip("trim_failed", chrom, amplicon)
 
         # check the the alignment still contains bases matching the reference
-        if not any(op in matchOps for op, _ in segment.cigartuples):  # type: ignore
+        if not any(op in MATCH_OPS for op, _ in segment.cigartuples):  # type: ignore
             if args.verbose:
                 console.debug(
                     f"{segment.query_name}:  dropped as does not match reference post masking"
@@ -547,9 +572,9 @@ def handle_segments(
             if qc is not None:
                 qc.kept(segments, chrom, amplicon, correctly_paired)
 
-            return (amplicon, False, correctly_paired)
+            return (amplicon, False, correctly_paired, originals)
 
-        return (amplicon, segment, correctly_paired)
+        return (amplicon, segment, correctly_paired, originals)
 
     else:
         for segment_of_pair in (segment1, segment2):
@@ -591,7 +616,7 @@ def handle_segments(
 
         # check the the alignment still contains bases matching the reference
         if not all(
-            any(op in matchOps for op, _ in seg.cigartuples)  # type: ignore
+            any(op in MATCH_OPS for op, _ in seg.cigartuples)  # type: ignore
             for seg in segments
         ):
             if args.verbose:
@@ -611,6 +636,8 @@ def handle_segments(
                     )
                 return skip("not_full_length", chrom, amplicon)
 
+        # genome coverage counts each mate, matching samtools depth, unlike the fragment depths used for
+        # --normalise and --amp-depth-report
         if genome_coverage is not None:
             for seg in (segment1, segment2):
                 genome_coverage[seg.reference_name][
@@ -625,9 +652,9 @@ def handle_segments(
             if qc is not None:
                 qc.kept(segments, chrom, amplicon, correctly_paired)
 
-            return (amplicon, False, correctly_paired)
+            return (amplicon, False, correctly_paired, originals)
 
-    return (amplicon, segment, correctly_paired)
+    return (amplicon, segment, correctly_paired, originals)
 
 
 def read_pair_generator(bam, region_string=None, qc=None, rejected=None):
@@ -746,6 +773,7 @@ def create_primer_lookup(
                             ),
                         ] = amp
                         added = True
+                        break
                 # If not added, create new row, add the amplicon to that then add back to original array
                 if not added:
                     new_row = np.empty_like(None, shape=(1, chromlen + 1))
@@ -827,6 +855,7 @@ def go(args):
         sys.exit(1)
 
     # prepare the report outfile
+    report_writer = None
     if args.report:
         reportfh = open(args.report, "w")
         report_headers = [
@@ -1019,41 +1048,24 @@ def go(args):
 
         for segments in read_pairs:
             n_pairs += 1
-            # trimming changes records in place, so keep them as read in for the rejected file
-            originals = tuple(copy(s) for s in segments) if rejected is not None else ()
-            if args.report:
-                trimming_tuple = handle_segments(
-                    segment=segments,  # type: ignore
-                    lookup=primer_lookup,
-                    args=args,
-                    report_writer=report_writer,  # type: ignore
-                    min_mapq=args.min_mapq,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                    qc=qc,
-                    rejected=rejected,
-                    originals=originals,
-                )
-            else:
-                trimming_tuple = handle_segments(
-                    segment=segments,  # type: ignore
-                    lookup=primer_lookup,
-                    args=args,
-                    min_mapq=args.min_mapq,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                    qc=qc,
-                    rejected=rejected,
-                    originals=originals,
-                )
+            trimming_tuple = handle_segments(
+                segment=segments,  # type: ignore
+                lookup=primer_lookup,
+                args=args,
+                report_writer=report_writer,
+                min_mapq=args.min_mapq,
+                outfile_writer=outfile,
+                amp_depths=amp_depths,
+                genome_coverage=genome_coverage_pre,
+                qc=qc,
+                rejected=rejected,
+            )
 
             if not trimming_tuple:
                 continue
 
             # unpack the trimming tuple since segment passed trimming
-            amplicon, trimmed_pair, correctly_paired = trimming_tuple
+            amplicon, trimmed_pair, correctly_paired, originals = trimming_tuple
 
             # If we aren't normalising the segments will have already been written to the outfile
             if not args.normalise and not trimmed_pair:
@@ -1072,6 +1084,7 @@ def go(args):
                     state["distance"] = test_distance
                     outfile.write(trimmed_pair[0])  # type: ignore
                     outfile.write(trimmed_pair[1])  # type: ignore
+                    # per mate, matching samtools depth
                     if genome_coverage_post is not None:
                         for seg in trimmed_pair:  # type: ignore
                             genome_coverage_post[seg.reference_name][
@@ -1111,41 +1124,24 @@ def go(args):
     else:
         # iterate over the alignment segments in the input SAM file
         for segment in chained_iterator:
-            originals = (copy(segment),) if rejected is not None else ()
-            if args.report:
-                trimming_tuple = handle_segments(
-                    segment=segment,
-                    args=args,
-                    report_writer=report_writer,  # type: ignore
-                    min_mapq=args.min_mapq,
-                    lookup=primer_lookup,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                    qc=qc,
-                    rejected=rejected,
-                    originals=originals,
-                )
-
-            else:
-                trimming_tuple = handle_segments(
-                    segment=segment,
-                    args=args,
-                    min_mapq=args.min_mapq,
-                    lookup=primer_lookup,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                    qc=qc,
-                    rejected=rejected,
-                    originals=originals,
-                )
+            trimming_tuple = handle_segments(
+                segment=segment,
+                args=args,
+                report_writer=report_writer,
+                min_mapq=args.min_mapq,
+                lookup=primer_lookup,
+                outfile_writer=outfile,
+                amp_depths=amp_depths,
+                genome_coverage=genome_coverage_pre,
+                qc=qc,
+                rejected=rejected,
+            )
 
             if not trimming_tuple:
                 continue
 
             # unpack the trimming tuple since segment passed trimming
-            amplicon, trimmed_segment, correctly_paired = trimming_tuple
+            amplicon, trimmed_segment, correctly_paired, originals = trimming_tuple
 
             # If we aren't normalising the segments will have already been written to the outfile
             if not args.normalise and not trimmed_segment:
@@ -1156,9 +1152,7 @@ def go(args):
                 state = norm_state[(chrom, amplicon)]
                 p_start = amplicons[chrom][amplicon].amplicon_start
                 test_depths = np.copy(state["depth"])
-                relative_start = max(0, trimmed_segment.reference_start - p_start)  # type: ignore
-                relative_end = trimmed_segment.reference_end - p_start  # type: ignore
-                test_depths[relative_start:relative_end] += 1
+                add_fragment_depth(test_depths, (trimmed_segment,), p_start)
                 test_distance = np.mean(np.abs(test_depths - args.normalise))
                 if test_distance < state["distance"]:
                     state["depth"] = test_depths
@@ -1202,7 +1196,7 @@ def go(args):
                         }
                     )
 
-    progress.done(f"{n_pairs:,} read pairs" if paired else None)
+    progress.done(f"{n_pairs:,} proper pairs" if paired else None)
 
     # Write genome coverage reports
     if args.genome_coverage_report:

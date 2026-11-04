@@ -270,7 +270,7 @@ class TestSections(ConsoleTestCase):
         )
         self.assertNotIn("\x1b", out)
         self.assertNotIn("\r", out)
-        self.assertIn("read pairs) in ", out)
+        self.assertIn("proper pairs) in ", out)
         # existing lines are unchanged under the headings
         self.assertIn("Pre-normalisation:   >= 1x: ", out)
         self.assertIn("Post-normalisation: Genome coverage summary", out)

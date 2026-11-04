@@ -12,7 +12,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 
 - `--qc-prefix PREFIX` writes five amplicon QC reports: a run summary, per-amplicon fragment fates, primer pair combinations, split (supplementary) alignments and concordance between overlapping amplicons. A one-line summary of each is printed to stderr. The trimmed output is unchanged by this option. See [QC reports](docs/qc-reports.md).
 - A warning on stderr when the majority base differs between two overlapping amplicons, which can indicate contamination.
-- stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and read pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
+- stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and proper pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
 - In a terminal: coloured headings, a live progress bar (percentage and time remaining for a BAM file, count and rate for stdin) and the coverage summary as a pre/post-normalisation table. Logs get plain `== Name ==` headings and a `progress:` line every 30 seconds. `NO_COLOR` and `FORCE_COLOR` are respected.
 - `--quiet`/`-q` prints only the coverage summary, QC summary and warnings to stderr.
 - Fragments lying inside two neighbouring amplicons (left primer of amplicon n+1, right primer of amplicon n) are removed as `ambiguous_amplicon` and never counted against either amplicon. `overlaps.tsv` gives the count for each overlap.
@@ -34,7 +34,8 @@ This release changes which reads are kept and how paired-end data is normalised,
 - Supplementary and secondary alignments could be paired in place of the real mate for paired-end data, and secondary alignments were written for single-end data.
 - Reads where primer trimming would produce an invalid CIGAR (e.g. an indel inside the primer) were written with their start position moved but the CIGAR unchanged. They are now dropped.
 - Reads aligned with `=`/`X` CIGAR operations were dropped instead of trimmed.
-- A deletion left directly before the right primer softmask was kept, so reads ended in e.g. `1D22S` and reported a spurious deletion at the last base before the primer. It is now removed, as was already done for the left primer.
+- A deletion left directly before the right primer softmask was kept, so reads ended in e.g. `1D22S` and reported a spurious deletion at the last base before the primer. It is now removed, as was already done for the left primer. An insertion next to either softmask (e.g. `2I20S`) is now added to the softmask.
+- A read (or mate) lying entirely inside a primer kept some unmasked primer bases (e.g. `5M15S`), so it was not removed as primer only. It is now fully soft masked and removed as `primer_only`.
 - For paired-end data the right primer was looked up at the end of whichever mate started later, rather than the rightmost mate end, so a pair with one mate contained in the other could be given the wrong right primer or removed by `--require-full-length`.
 
 ## [1.2.0] - 2026-06-23

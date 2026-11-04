@@ -49,7 +49,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 
 The trimmed SAM/BAM is the only thing written to stdout. Everything else goes to stderr, grouped under headings in this order (a section only appears when it has something to show):
 
-1. `Run`: version, input, scheme and output, progress while reads are processed, then one completion line (records, read pairs, time and rate)
+1. `Run`: version, input, scheme and output, progress while reads are processed, then one completion line (records, proper pairs, time and rate)
 2. `Coverage`: with `--genome-coverage-report`
 3. `QC summary`: with `--qc-prefix`
 4. `Warnings`: e.g. a majority base difference between overlapping amplicons, or how many fragments were skipped because primer soft masking failed
@@ -67,7 +67,7 @@ align_trim 2.0.0
   scheme  primer.bed (48 amplicons, 1 reference)
   output  trimmed.bam
 progress: 1,163,264 records (73%), 38.5k records/s
-processed 1,601,770 records (760,958 read pairs) in 40.2s, 39.8k records/s
+processed 1,601,770 records (760,958 proper pairs) in 40.2s, 39.8k records/s
 == Coverage ==
 Pre-normalisation: Genome coverage summary
 ...

@@ -47,6 +47,8 @@ PAIR_TYPES = [
     "left_primer_at_both_ends",
     "right_primer_at_both_ends",
 ]
+# LEFT_n+1 / RIGHT_n pairs, from a fragment inside both amplicon n and n+1
+OVERLAP_PAIR_TYPES = ("at_overlap_primers", "inside_overlap")
 
 # split read join types, most to least notable
 SPLIT_TYPES = ["amplicon_chimera", "joined_inside_amplicon", "low_mapq_part"]
@@ -77,6 +79,9 @@ CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 COUNT_COLS = ["A", "C", "G", "T", "N", "DEL", "INS"]
 BASE_INDEX = {"A": 0, "C": 1, "G": 2, "T": 3}
 N_IDX, DEL_IDX, INS_IDX = 4, 5, 6
+# count column of each base, indexed by ASCII code (anything other than A C G T counts as N)
+BASE_CODES = np.full(256, N_IDX, dtype=np.intp)
+BASE_CODES[[ord(b) for b in BASE_INDEX]] = list(BASE_INDEX.values())
 ALLELE_COLS = [0, 1, 2, 3, DEL_IDX]  # alleles contributing to depth
 
 COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
@@ -84,6 +89,26 @@ COMPLEMENT = str.maketrans("ACGTacgt", "TGCAtgca")
 
 def revcomp(seq: str) -> str:
     return seq.translate(COMPLEMENT)[::-1]
+
+
+def kmer_pattern(kmers) -> Optional[re.Pattern]:
+    """Regex matching any of the (equal length) k-mers, built as a trie so a read is searched in one pass.
+
+    Returns None if there are no k-mers.
+    """
+    trie = {}
+    for kmer in kmers:
+        node = trie
+        for base in kmer:
+            node = node.setdefault(base, {})
+
+    def build(node):
+        alts = [re.escape(base) + build(child) for base, child in sorted(node.items())]
+        if len(alts) <= 1:
+            return "".join(alts)
+        return "(?:" + "|".join(alts) + ")"
+
+    return re.compile(build(trie)) if trie else None
 
 
 def primer_5p_ends(bedlines: list[BedLine]) -> dict:
@@ -248,8 +273,11 @@ def count_bases_in_window(segment, start, end, counts, seen=None):
     ):
         return covered
 
-    def skip(i):
-        return seen is not None and seen[i]
+    def window_indices(rpos, length):
+        """Window indices of reference [rpos, rpos + length) not already counted for the other mate."""
+        lo, hi = max(rpos, start), min(rpos + length, end)
+        idx = np.arange(lo - start, max(lo, hi) - start)
+        return idx if seen is None else idx[~seen[idx]]
 
     # window positions where this segment added to the depth (A C G T or DEL), which an insertion needs as its anchor
     in_depth = np.zeros(end - start, dtype=bool)
@@ -258,14 +286,15 @@ def count_bases_in_window(segment, start, end, counts, seen=None):
     qpos = 0
     for op, length in segment.cigartuples:
         if op in MATCH_OPS:
-            for p in range(max(rpos, start), min(rpos + length, end)):
-                i = p - start
-                if skip(i):
-                    continue
-                base = BASE_INDEX.get(seq[qpos + p - rpos], N_IDX)
-                counts[i, base] += 1
-                covered[i] = True
-                in_depth[i] = base != N_IDX
+            idx = window_indices(rpos, length)
+            if idx.size:
+                q = idx + (start - rpos + qpos)
+                bases = BASE_CODES[
+                    np.frombuffer(seq[q[0] : q[-1] + 1].encode(), dtype=np.uint8)
+                ][q - q[0]]
+                counts[idx, bases] += 1
+                covered[idx] = True
+                in_depth[idx] = bases != N_IDX
             rpos += length
             qpos += length
         elif op == 1:
@@ -274,13 +303,10 @@ def count_bases_in_window(segment, start, end, counts, seen=None):
                 counts[i, INS_IDX] += 1
             qpos += length
         elif op == 2:
-            for p in range(max(rpos, start), min(rpos + length, end)):
-                i = p - start
-                if skip(i):
-                    continue
-                counts[i, DEL_IDX] += 1
-                covered[i] = True
-                in_depth[i] = True
+            idx = window_indices(rpos, length)
+            counts[idx, DEL_IDX] += 1
+            covered[idx] = True
+            in_depth[idx] = True
             rpos += length
         elif op == 3:
             # a skipped region (N) is not covered by the read, so contributes no observation
@@ -414,6 +440,9 @@ class QC:
             self.right_end_kmers.setdefault(revcomp(kmer), bl)
         self.scan_window = max((len(bl.sequence or "") for bl in bedlines), default=0)
         self.scan_window += SCAN_ADAPTER_FLANK
+        # the right end is scanned reversed, so the first match is the one nearest the read end
+        self.left_end_re = kmer_pattern(self.left_end_kmers)
+        self.right_end_re = kmer_pattern(kmer[::-1] for kmer in self.right_end_kmers)
 
     @classmethod
     def from_args(cls, args, amplicon_list, lookup, bedlines) -> Optional["QC"]:
@@ -474,22 +503,13 @@ class QC:
 
     def _scan_end(self, segment, left_end):
         seq = segment.query_sequence
-        if not seq:
+        if not seq or self.left_end_re is None:
             return None
-        k = SAME_DIRECTION_K
         if left_end:
-            region = seq[: self.scan_window]
-            for i in range(len(region) - k + 1):
-                hit = self.left_end_kmers.get(region[i : i + k])
-                if hit:
-                    return hit
-        else:
-            region = seq[-self.scan_window :]
-            for i in range(len(region) - k, -1, -1):
-                hit = self.right_end_kmers.get(region[i : i + k])
-                if hit:
-                    return hit
-        return None
+            match = self.left_end_re.search(seq, 0, self.scan_window)
+            return self.left_end_kmers[match.group()] if match else None
+        match = self.right_end_re.search(seq[-self.scan_window :][::-1])  # type: ignore
+        return self.right_end_kmers[match.group()[::-1]] if match else None
 
     # split alignments
     def _near_amplicon_end(self, chrom, pos):

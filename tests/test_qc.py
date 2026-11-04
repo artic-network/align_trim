@@ -1,5 +1,4 @@
 import contextlib
-import copy
 import csv
 import io
 import pathlib
@@ -139,6 +138,40 @@ class TestBugFixes(unittest.TestCase):
         trim(left, 123, False)
         self.assertEqual(left.cigarstring, "22S50M")
         self.assertEqual(left.reference_start, 123)
+
+    def test_trim_read_inside_primer(self):
+        """A read lying entirely inside the primer is fully soft masked, not given back matches over primer bases"""
+        right = make_segment(480, "20M")
+        trim(right, 475, True)
+        self.assertEqual(right.cigarstring, "20S")
+
+        left = make_segment(100, "20M")
+        trim(left, 125, False)
+        self.assertEqual(left.cigarstring, "20S")
+
+        # ending exactly at the primer boundary
+        exact = make_segment(100, "20M")
+        trim(exact, 120, False)
+        self.assertEqual(exact.cigarstring, "20S")
+
+    def test_trim_removes_insertion_at_softmask(self):
+        """An insertion left next to the softmask is added to it, as a deletion there is removed"""
+        seg = make_segment(100, "50M2I1D20M")
+        trim(seg, 151, True)
+        self.assertEqual(seg.cigarstring, "50M22S")
+        self.assertEqual(seg.reference_end, 150)
+
+        left = make_segment(100, "20M1D2I50M")
+        trim(left, 120, False)
+        self.assertEqual(left.cigarstring, "22S50M")
+        self.assertEqual(left.reference_start, 121)
+
+    def test_primer_lookup_one_row_per_amplicon(self):
+        """Each amplicon is written to one row of the lookup, not every free row"""
+        amplicons, lookup, _ = v532()
+        for amp in amplicons:
+            rows = [r for r in lookup[CHROM][:, amp.amplicon_start] if r is amp]
+            self.assertEqual(len(rows), 1, amp.amplicon_number)
 
     def test_trim_extended_cigar_ops(self):
         """=/X CIGAR operations are trimmed the same as M"""
@@ -904,7 +937,6 @@ class TestAmbiguousAmplicon(unittest.TestCase):
             amp_depths=amp_depths,
             qc=qc,
             rejected=rejected,
-            originals=(copy.copy(seg),),
         )
         return result, qc, rejected
 
@@ -1004,7 +1036,7 @@ class TestSplitJoinDeduplication(unittest.TestCase):
 
 
 class TestFragmentEnds(unittest.TestCase):
-    def handle(self, segment, originals=(), **kwargs):
+    def handle(self, segment, **kwargs):
         amplicons, lookup, qc = v532()
         amp_depths = {
             CHROM: {
@@ -1024,7 +1056,6 @@ class TestFragmentEnds(unittest.TestCase):
             amp_depths=amp_depths,
             qc=qc,
             rejected=rejected,
-            originals=originals,
         )
         return result, qc, rejected
 
@@ -1037,11 +1068,22 @@ class TestFragmentEnds(unittest.TestCase):
         self.assertEqual(result[0], 1)
         self.assertEqual(qc.fates[(CHROM, 1)]["kept"], 1)
 
+    def test_mate_inside_primer_is_primer_only(self):
+        """A pair whose mate lies inside the right primer is removed as primer_only, not kept with primer bases"""
+        # v5.3.2 amplicon 1 is 47-447
+        mate1 = make_segment(47, "400M", name="q")
+        mate2 = make_segment(432, "15M", name="q", reverse=True)
+        result, qc, rejected = self.handle((mate1, mate2))
+        self.assertFalse(result)
+        self.assertEqual(qc.fates[(CHROM, 1)]["primer_only"], 1)
+        # rejected records are written as read in
+        self.assertEqual([r.cigarstring for r in rejected.records], ["400M", "15M"])
+
     def test_unmapped_secondary_not_counted(self):
         """An unmapped single-end record flagged secondary is not a fragment of its own"""
         seg = make_segment(47, "400M")
         seg.flag = 4 + 256
-        result, qc, rejected = self.handle(seg, originals=(seg,))
+        result, qc, rejected = self.handle(seg)
         self.assertFalse(result)
         self.assertEqual(sum(qc.unassigned.values()), 0)
         self.assertEqual(rejected.records, [])
