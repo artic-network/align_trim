@@ -1,12 +1,12 @@
 # align_trim
 
-Stand alone version of ARTIC's fieldbioinformatics align_trim.py
+Stand alone version of ARTIC's fieldbioinformatics align_trim.py. It assigns aligned reads from a tiling amplicon scheme to their amplicons, soft-clips the primers and can normalise depth per amplicon.
 
-## Installation  
+## Installation
 
 From conda
 ```bash
-conda install bioconda::align_trim 
+conda install bioconda::align_trim
 ```
 from pypi
 ```bash
@@ -20,113 +20,40 @@ uv sync
 uv run align_trim --help
 ```
 
-## Command Line Interface
-
-### Basic Usage
+## Quick start
 
 ```bash
-align_trim [OPTIONS] BEDFILE
+align_trim primer.bed --samfile input.bam --output trimmed.bam
 ```
 
-The tool reads alignment data from either a SAM/BAM file or stdin and outputs trimmed alignments to stdout in SAM format by default.
+- `primer.bed` is the primer scheme in [primer.bed v3](https://doi.org/10.5281/zenodo.16366659) format.
+- `input.bam` is a sorted BAM of reads aligned to the scheme's reference. Leave out `--samfile` to read SAM/BAM from stdin.
+- The output format follows the extension (`.bam` or `.sam`). Leave out `--output` to write SAM to stdout.
 
-### Required Arguments
+Normalise to 200x per amplicon and write the amplicon QC reports:
 
-- `BEDFILE`: BED file containing the amplicon primer scheme in [v3](https://doi.org/10.5281/zenodo.16366659) format. 
-
-### Optional Arguments
-
-#### Input/Output Options
-
-- `--samfile`, `-s` : Sorted SAM/BAM file containing the aligned reads, if this is not provided (or '-') then 'align_trim' will read from stdin.
-- `--output`, `-o` : Output file path. Format determined by extension (.sam/.bam). If not provided or '-', writes SAM to stdout
-
-#### Processing Options
-
-- `--normalise`, `-n` : Normalise to target depth N per amplicon using a greedy per-read algorithm. Each read is kept only if it brings the amplicon depth closer to the target. Use 0 for no normalisation (default: 0)
-- `--min-mapq`, `-m` : Minimum mapping quality to keep an aligned read (default: 20)
-- `--primer-match-threshold`, `-p` : Add this many bases of padding to the 5' end of primer coordinates to allow fuzzy matching for reads with barcodes/adapters (default: 35)
-
-#### Primer and Read Handling
-
-- `--no-trim-primers` : Do not trim primers from reads (by default, primers are trimmed)
-- `--allow-incorrect-pairs` : Allow reads to be assigned to amplicons even if primers are not correctly paired
-- `--require-full-length` : Require all reads to start and stop in primer sites (do not use with rapid barcoding)
-
-#### Output and Reporting
-
-- `--report`, `-r` : Output detailed report TSV to specified filepath
-- `--amp-depth-report`, `-a` : Output mean depth for each amplicon as TSV to specified filepath
-- `--genome-coverage-report`, `-g` : Output per-position genome coverage TSV(s) using the given prefix. Summary statistics (% genome covered at >=1x, >=10x, >=20x, >=100x) are printed to stderr. See [Genome Coverage Report](#genome-coverage-report) for details
-- `--no-read-groups` : Do not divide reads into pool-based read groups in SAM/BAM output
-
-#### General Options
-
-- `--verbose`, `-v` : Enable debug mode with detailed logging to stderr
-- `--version` : Show version information
-- `--help` : Show help message
-
-### Examples
-
-#### Basic trimming with primer removal
 ```bash
-align_trim primers.bed --samfile input.bam --output trimmed.bam
+align_trim primer.bed --samfile input.bam --output trimmed.bam \
+  --normalise 200 --qc-prefix sample1
 ```
 
-#### Normalize coverage and generate reports
-```bash
-align_trim primers.bed --samfile input.bam --normalise 100 \
-  --report alignment_report.tsv --amp-depth-report depth_report.tsv \
-  --genome-coverage-report sample1 \
-  --output normalized.bam
-```
+## Common options
 
-#### Process from stdin with verbose output
-```bash
-samtools view -h input.bam | align_trim primers.bed --verbose > trimmed.sam 2> verbose.out.txt
-```
+| option | meaning |
+| --- | --- |
+| `--normalise N`, `-n` | keep reads until each amplicon reaches a depth of N fragments (a read pair counts once). 0 turns it off (default) |
+| `--min-mapq`, `-m` | minimum mapping quality (default: 20) |
+| `--primer-match-threshold`, `-p` | how far, in bases, a read end can be from a primer and still match it (default: 5) |
+| `--allow-incorrect-pairs` | keep reads whose two ends match primers from different amplicons (reads inside two neighbouring amplicons are still removed) |
+| `--require-full-length` | only keep reads spanning a whole amplicon (not for rapid barcoding or other fragmented libraries) |
+| `--no-trim-primers` | assign reads but leave primers untrimmed |
+| `--qc-prefix PREFIX` | write the amplicon QC reports as `PREFIX.<name>.tsv` |
 
-#### Strict full-length read filtering
-```bash
-align_trim primers.bed --samfile input.bam --require-full-length \
-  --min-mapq 30 --output filtered.bam
-```
+Run `align_trim --help` for every option. Progress, coverage and QC summaries and warnings are printed to stderr; see [terminal output](https://github.com/artic-network/align_trim/blob/main/docs/usage.md#terminal-output).
 
-#### Allow mismatched primer pairs with custom threshold
-```bash
-align_trim primers.bed --samfile input.bam --allow-incorrect-pairs \
-  --primer-match-threshold 50 --output relaxed.bam
-```
+## Documentation
 
-### Output Formats
-
-The tool supports multiple output formats based on file extension:
-- `.sam` - SAM format (text)
-- `.bam` - BAM format (binary, compressed)
-- No extension or `-` - SAM format to stdout
-
-### Report Files
-
-When using `--report`, a tab-separated file is generated with the following columns:
-- `chrom`: Reference chromosome/contig
-- `QueryName`: Read name
-- `ReferenceStart`/`ReferenceEnd`: Alignment coordinates
-- `PrimerPair`: Primer pair assignment
-- `Primer1`/`Primer2`: Individual primer information
-- `CorrectlyPaired`: Boolean indicating proper primer pairing
-- Additional alignment metrics
-
-The `--amp-depth-report` generates a summary of coverage depth per amplicon.
-
-### Genome Coverage Report
-
-When using `--genome-coverage-report PREFIX`, per-position genome coverage is written as tab-separated files with columns `chrom`, `pos` (1-based), and `depth`.
-
-**Without `--normalise`**, a single file is produced:
-- `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming
-
-**With `--normalise`**, two files are produced:
-- `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming (before normalisation subsampling)
-- `PREFIX.post-normalisation.coverage.tsv` — coverage of reads retained after normalisation
-
-In both cases, a coverage summary is printed to stderr showing the percentage of genome positions covered at >=1x, >=10x, >=20x, >=100x, and >=1000x.
+- [Usage](https://github.com/artic-network/align_trim/blob/main/docs/usage.md): every option, examples and output formats
+- [Report outputs](https://github.com/artic-network/align_trim/blob/main/docs/outputs.md): `--report`, `--amp-depth-report` and `--genome-coverage-report`
+- [QC reports](https://github.com/artic-network/align_trim/blob/main/docs/qc-reports.md): the `--qc-prefix` reports and how to read them
+- [Changelog](https://github.com/artic-network/align_trim/blob/main/CHANGELOG.md): changes in each release, including behaviour changes in 2.0.0

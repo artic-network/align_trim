@@ -14,15 +14,32 @@ from primalbedtools.amplicons import Amplicon, create_amplicons
 from primalbedtools.bedfiles import BedLine, merge_primers
 from primalbedtools.scheme import Scheme
 
+from align_trim.console import BOLD, bam_fraction, console
+from align_trim.qc import (
+    DEFAULT_PRIMER_MATCH_THRESHOLD,
+    MATCH_OPS,
+    OVERLAP_PAIR_TYPES,
+    QC,
+    classify_primer_pair,
+)
+
 # consumesReference lookup for if a CIGAR operation consumes the reference sequence
-consumesReference = [True, False, True, True, False, False, False, True]
+consumesReference = [True, False, True, True, False, False, False, True, True]
 
 # consumesQuery lookup for if a CIGAR operation consumes the query sequence
-consumesQuery = [True, True, False, False, True, False, False, True]
+consumesQuery = [True, True, False, False, True, False, False, True, True]
+
+# tag giving the reason on each record in the --rejected-output file
+REJECTED_TAG = "ZR"
 
 
 def find_primer_with_lookup(lookup, pos, direction, chrom) -> Optional[BedLine]:
-    pos_amps = lookup[chrom][:, pos]  # Search both pools for amplicons at this position
+    # a right ("-") end is an exclusive reference_end, so look up the last aligned base, matching the
+    # lookup's [amplicon_start - padding, amplicon_end + padding) span on both sides
+    lookup_pos = pos - 1 if direction == "-" else pos
+    pos_amps = lookup[chrom][
+        :, lookup_pos
+    ]  # Search both pools for amplicons at this position
     closest_dist = float("inf")
     closest_p = None
     if direction == "+":
@@ -106,9 +123,8 @@ def trim(segment, primer_pos, end, verbose=False):
         If True, will print soft masking info during trimming
     """
     if verbose:
-        print(
-            f"{segment.query_name}: Trimming {'end' if end else 'start'} of read to primer position {primer_pos}",
-            file=sys.stderr,
+        console.debug(
+            f"{segment.query_name}: Trimming {'end' if end else 'start'} of read to primer position {primer_pos}"
         )
     # get a copy of the cigar tuples to work with
     cigar = copy(segment.cigartuples)
@@ -121,6 +137,7 @@ def trim(segment, primer_pos, end, verbose=False):
 
     # process the CIGAR to determine how much softmasking is required
     eaten = 0
+    exhausted = False
     while 1:
         # chomp CIGAR operations from the start/end of the CIGAR
         try:
@@ -129,16 +146,13 @@ def trim(segment, primer_pos, end, verbose=False):
             else:
                 flag, length = cigar.pop(0)
             if verbose:
-                print(
-                    f"{segment.query_name}: Chomped a {flag}, {length}",
-                    file=sys.stderr,
-                )
+                console.debug(f"{segment.query_name}: Chomped a {flag}, {length}")
         except IndexError:
             if verbose:
-                print(
-                    f"{segment.query_name}: Ran out of cigar during soft masking - completely masked read will be ignored",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment.query_name}: Ran out of cigar during soft masking - completely masked read will be ignored"
                 )
+            exhausted = True
             break
 
         # if the CIGAR operation consumes the reference sequence, increment/decrement the position by the CIGAR operation length
@@ -153,21 +167,24 @@ def trim(segment, primer_pos, end, verbose=False):
             eaten += length
 
         # stop processing the CIGAR if we've gone far enough to mask the primer
-        if not end and pos >= primer_pos and flag == 0:
+        if not end and pos >= primer_pos and flag in MATCH_OPS:
             break
-        if end and pos <= primer_pos and flag == 0:
+        if end and pos <= primer_pos and flag in MATCH_OPS:
             break
+
+    # the whole alignment lies inside the primer, so soft mask all of it (no matches are left, so it is dropped as
+    # primer_only) rather than adding back matches over primer bases
+    if exhausted or (not cigar and pos == primer_pos):
+        segment.cigartuples = [(4, eaten)]
+        return
 
     # calculate how many extra matches are needed in the CIGAR
     extra = abs(pos - primer_pos)
     if verbose:
-        print(f"{segment.query_name}: extra {extra}", file=sys.stderr)
+        console.debug(f"{segment.query_name}: extra {extra}")
     if extra:
         if verbose:
-            print(
-                f"{segment.query_name}: Inserted a 0, {extra}",
-                file=sys.stderr,
-            )
+            console.debug(f"{segment.query_name}: Inserted a 0, {extra}")
         if end:
             cigar.append((0, extra))
         else:
@@ -179,42 +196,100 @@ def trim(segment, primer_pos, end, verbose=False):
         # update the position of the leftmost mapping base
         segment.pos = pos - extra
         if verbose:
-            print(
-                f"{segment.query_name}: New pos - {segment.pos}",
-                file=sys.stderr,
-            )
+            console.debug(f"{segment.query_name}: New pos - {segment.pos}")
 
-        # if proposed softmask leads straight into a deletion, shuffle leftmost mapping base along and ignore the deletion
-        if cigar[0][0] == 2:
+        # if proposed softmask leads straight into an indel, ignore it: shuffle leftmost mapping base along past a
+        # deletion, and add an insertion's bases to the softmask
+        while cigar and cigar[0][0] in (1, 2):
+            flag, length = cigar.pop(0)
             if verbose:
-                print(
-                    f"{segment.query_name}: softmask created a leading deletion in the CIGAR, shuffling the alignment",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment.query_name}: softmask created a leading {'insertion' if flag == 1 else 'deletion'} in the CIGAR, removing it"
                 )
-            while 1:
-                if cigar[0][0] != 2:
-                    break
-                _, length = cigar.pop(0)
+            if flag == 2:
                 segment.pos += length
+            else:
+                eaten += length
 
         # now add the leading softmask
         cigar.insert(0, (4, eaten))
 
     # softmask the right primer
     else:
+        # if proposed softmask leads straight out of an indel, ignore it: drop a deletion (the reference end moves left
+        # with it), and add an insertion's bases to the softmask
+        while cigar and cigar[-1][0] in (1, 2):
+            flag, length = cigar.pop()
+            if verbose:
+                console.debug(
+                    f"{segment.query_name}: softmask created a trailing {'insertion' if flag == 1 else 'deletion'} in the CIGAR, removing it"
+                )
+            if flag == 1:
+                eaten += length
+
         cigar.append((4, eaten))
 
-    # check the new CIGAR and replace the old one
+    # check the new CIGAR and replace the old one, segment.pos may already have moved so the segment must be dropped
     if cigar[0][1] <= 0 or cigar[-1][1] <= 0:
-        if verbose:
-            print(
-                f"{segment.query_name}: invalid cigar operation created - possibly due to INDEL in primer",
-                file=sys.stderr,
-            )
-        return
+        raise ValueError(
+            "invalid cigar operation created - possibly due to INDEL in primer"
+        )
 
     segment.cigartuples = cigar
     return
+
+
+def fragment_spans(segments) -> list[tuple[int, int]]:
+    """Reference intervals covered by a template (one read or a read pair), with overlapping mates merged so each position is counted once.
+
+    Parameters
+    ----------
+    segments : tuple[pysam.AlignedSegment, ...]
+        The segment(s) making up the template
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        Disjoint (start, end) intervals in reference coordinates
+    """
+    spans = sorted((seg.reference_start, seg.reference_end) for seg in segments)
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def add_fragment_depth(depths, segments, offset):
+    """Add +1 per position covered by a template to an amplicon depth array starting at reference position `offset`."""
+    for start, end in fragment_spans(segments):
+        depths[max(0, start - offset) : max(0, end - offset)] += 1
+
+
+def same_file(a, b) -> bool:
+    """True if paths a and b refer to the same file, whether or not it exists yet."""
+    a, b = Path(a), Path(b)
+    if a.exists() and b.exists():
+        return a.samefile(b)
+    return a.resolve() == b.resolve()
+
+
+def _skip(qc, fate, chrom=None, amplicon=None, rejected=None, records=()):
+    """Record why a fragment (read or read pair) was removed and return False.
+
+    The reason is counted for the QC reports if requested, and the fragment's records are written to the
+    --rejected-output file (if given) tagged ZR:Z:<reason>.
+    """
+    if qc is not None:
+        qc.fate(fate, chrom, amplicon)
+    if rejected is not None:
+        for record in records:
+            if record is not None:
+                record.set_tag(REJECTED_TAG, fate, "Z")
+                rejected.write(record)
+    return False
 
 
 def handle_segments(
@@ -226,8 +301,10 @@ def handle_segments(
     min_mapq: int,
     outfile_writer: pysam.AlignmentFile,
     amp_depths: dict,
-    report_writer: csv.DictWriter = False,  # type: ignore
+    report_writer: Optional[csv.DictWriter] = None,
     genome_coverage: Optional[dict] = None,
+    qc=None,
+    rejected: Optional[pysam.AlignmentFile] = None,
 ):
     """Handle the alignment segment(s) including filtering, soft masking, and reporting.
 
@@ -236,148 +313,140 @@ def handle_segments(
         bed (dict): The primer scheme
         reportfh (typing.IO): The report file handle
         args (argparse.Namespace): The command line arguments
+        qc (align_trim.qc.QC | None): QC report accumulator, None if --qc-prefix was not given
+        rejected (pysam.AlignmentFile | None): --rejected-output file, None if not given
 
     Returns:
-        tuple [int, pysam.AlignedSegment | bool] | bool: A tuple containing the amplicon number and the alignment segment, or False if the segment is to be skipped
+        tuple [int, pysam.AlignedSegment | bool, bool, tuple] | bool: A tuple containing the amplicon number, the alignment segment, whether the primers were correctly paired and the segment(s) as read in (for the rejected file, empty if not given), or False if the segment is to be skipped
     """
+
+    def skip(fate, chrom=None, amplicon=None):
+        return _skip(qc, fate, chrom, amplicon, rejected, originals)
+
     paired = isinstance(segment, tuple)
+    # records written to the rejected file, copied before the first change so they are written as read in
+    originals = segment if paired else (segment,)
     if paired:
         segment1, segment2 = segment
         if not segment1 or not segment2:
             segment = segment1 if segment1 else segment2
             if args.verbose:
-                print(
-                    f"{segment.query_name}: Pair skipped as at least one segment in pair does not exist",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment.query_name}: Pair skipped as at least one segment in pair does not exist"
                 )
-            return False
-
-    # filter out unmapped and supplementary alignment segments
-    if not paired:
-        if segment.is_unmapped:
-            if args.verbose:
-                print(
-                    f"{segment.query_name}: skipped as unmapped",
-                    file=sys.stderr,
-                )
-            return False
+            return skip("missing_mate", segment.reference_name)
+        segments = (segment1, segment2)
     else:
-        if segment1.is_unmapped or segment2.is_unmapped:
-            if args.verbose:
-                print(
-                    f"{segment1.query_name}: skipped as unmapped",
-                    file=sys.stderr,
-                )
-            return False
+        segments = (segment,)
+    chrom = segments[0].reference_name
 
+    # supplementary/secondary records are extra alignments of a read counted via its primary record, so no fate is
+    # recorded, and they are filtered before the unmapped check so an unmapped one is not counted as a fragment
     if not paired:
         if segment.is_supplementary:
             if args.verbose:
-                print(
-                    f"{segment.query_name}: skipped as supplementary",
-                    file=sys.stderr,
-                )
+                console.debug(f"{segment.query_name}: skipped as supplementary")
+            return False
+        # read_pair_generator already drops secondary alignments for paired data
+        if segment.is_secondary:
+            if args.verbose:
+                console.debug(f"{segment.query_name}: skipped as secondary")
             return False
     else:
         if segment1.is_supplementary or segment2.is_supplementary:
             if args.verbose:
-                print(
-                    f"{segment1.query_name}: skipped as supplementary",
-                    file=sys.stderr,
-                )
+                console.debug(f"{segment1.query_name}: skipped as supplementary")
             return False
+
+    if not paired:
+        if segment.is_unmapped:
+            if args.verbose:
+                console.debug(f"{segment.query_name}: skipped as unmapped")
+            return skip("unmapped", chrom)
+    else:
+        if segment1.is_unmapped or segment2.is_unmapped:
+            if args.verbose:
+                console.debug(f"{segment1.query_name}: skipped as unmapped")
+            return skip("unmapped", chrom)
 
     if not paired:
         if segment.mapping_quality < min_mapq:
             if args.verbose:
-                print(
-                    f"{segment.query_name}: skipped as mapping quality below threshold",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment.query_name}: skipped as mapping quality below threshold"
                 )
-            return False
+            return skip("low_mapq", chrom)
     else:
         if segment1.mapping_quality < min_mapq or segment2.mapping_quality < min_mapq:
             if args.verbose:
-                print(
-                    f"{segment1.query_name}: skipped as mapping quality below threshold",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment1.query_name}: skipped as mapping quality below threshold"
                 )
-            return False
+            return skip("low_mapq", chrom)
 
     if not paired:
         if segment.reference_end is None:
             if args.verbose:
-                print(
-                    f"{segment.query_name}: skipped as no mapping data",
-                    file=sys.stderr,
-                )
-            return False
+                console.debug(f"{segment.query_name}: skipped as no mapping data")
+            return skip("no_alignment", chrom)
     else:
         if segment1.reference_end is None or segment2.reference_end is None:
             if args.verbose:
-                print(
-                    f"{segment1.query_name}: skipped as no mapping data",
-                    file=sys.stderr,
-                )
-            return False
-    if not paired:
-        # locate the nearest primers to this alignment segment
-        p1 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment.reference_start,
-            direction="+",
-            chrom=segment.reference_name,
-        )
+                console.debug(f"{segment1.query_name}: skipped as no mapping data")
+            return skip("no_alignment", chrom)
 
-        p2 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment.reference_end,
-            direction="-",
-            chrom=segment.reference_name,
-        )
-    else:
-        # locate the nearest primers to this alignment segment pair
-        if segment1.reference_start < segment2.reference_start:
-            # if segment1 starts before segment2, then segment1 is the left segment relative to the reference
-            p1 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment1.reference_start,
-                direction="+",
-                chrom=segment1.reference_name,
-            )
-            p2 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment2.reference_end,
-                direction="-",
-                chrom=segment2.reference_name,
-            )
-        else:
-            # otherwise then segment2 is the left segment relative to the reference
-            p1 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment2.reference_start,
-                direction="+",
-                chrom=segment2.reference_name,
-            )
-            p2 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment1.reference_end,
-                direction="-",
-                chrom=segment1.reference_name,
-            )
+    if qc is not None:
+        qc.split(segments)
+
+    # the fragment runs from the leftmost mate start to the rightmost mate end, which need not be the same mate
+    # (e.g. one mate is contained in the other)
+    left_seg = min(segments, key=lambda s: s.reference_start)
+    right_seg = max(segments, key=lambda s: s.reference_end)  # type: ignore
+
+    # locate the nearest primers to the fragment ends
+    p1 = find_primer_with_lookup(
+        lookup=lookup,
+        pos=left_seg.reference_start,
+        direction="+",
+        chrom=left_seg.reference_name,
+    )
+    p2 = find_primer_with_lookup(
+        lookup=lookup,
+        pos=right_seg.reference_end,
+        direction="-",
+        chrom=right_seg.reference_name,
+    )
+    if qc is not None:
+        qc.same_direction(left_seg, right_seg, p1, p2)
 
     if not p1 or not p2:
         if paired:
             segment = segment1 if segment1 else segment2
         if args.verbose:
-            print(
-                f"{segment.query_name}: skipped as no primer found for segment",
-                file=sys.stderr,
+            console.debug(
+                f"{segment.query_name}: skipped as no primer found for segment"
             )
-        return False
+        found = p1 or p2
+        return skip(
+            "no_primer_match",
+            found.chrom if found else chrom,
+            found.amplicon_number if found else None,
+        )
 
     # check if primers are correctly paired and then assign read group
     correctly_paired = p1.amplicon_number == p2.amplicon_number
+    if qc is not None:
+        pair_type = qc.pair(
+            p1, p2, start=left_seg.reference_start, end=right_seg.reference_end
+        )
+    else:
+        pair_type = classify_primer_pair(p1, p2)
+
+    # tagging and trimming change the records in place
+    if rejected is not None:
+        originals = tuple(copy(s) for s in segments)
+    else:
+        originals = ()
 
     if not paired:
         if not args.no_read_groups:
@@ -396,6 +465,7 @@ def handle_segments(
 
     # get the amplicon number
     amplicon = p1.amplicon_number
+    chrom = p1.chrom
 
     if args.report:
         # update the report with this alignment segment + primer details
@@ -418,14 +488,23 @@ def handle_segments(
         }
         report_writer.writerow(report)
 
+    # LEFT_n+1 / RIGHT_n: the fragment lies inside both amplicon n and n+1 and its ends do not show which
+    # it came from, so it is not assigned to either (even with --allow-incorrect-pairs)
+    if pair_type in OVERLAP_PAIR_TYPES:
+        if args.verbose:
+            console.debug(
+                f"{(segment if not paired else segment1).query_name}: skipped as it lies inside amplicons "
+                f"{p2.amplicon_number} and {p1.amplicon_number} and its ends do not place it in one"
+            )
+        if qc is not None:
+            qc.ambiguous[(chrom, p2.amplicon_number)] += 1
+        return skip("ambiguous_amplicon", chrom)
+
     if not args.allow_incorrect_pairs and not correctly_paired:
         segment = segment if not paired else segment1
         if args.verbose:
-            print(
-                f"{segment.query_name}: skipped as not correctly paired",
-                file=sys.stderr,
-            )
-        return False
+            console.debug(f"{segment.query_name}: skipped as not correctly paired")
+        return skip("mismatched_primers", chrom, amplicon)
 
     # get the primer positions
     if not args.no_trim_primers:
@@ -441,51 +520,45 @@ def handle_segments(
             try:
                 trim(segment, p1_position, False, args.verbose)
                 if args.verbose:
-                    print(
-                        f"{segment.query_name}: ref start {segment.reference_start} >= primer_position {p1_position}",
-                        file=sys.stderr,
+                    console.debug(
+                        f"{segment.query_name}: ref start {segment.reference_start} >= primer_position {p1_position}"
                     )
             except Exception as e:
-                print(
-                    f"{segment.query_name}: problem soft masking left primer (error: {e}), skipping",
-                    file=sys.stderr,
+                console.read_warning(
+                    f"{segment.query_name}: problem soft masking left primer (error: {e}), skipping"
                 )
-                return False
+                return skip("trim_failed", chrom, amplicon)
 
         # softmask the alignment if right primer start/end inside alignment
         if segment.reference_end > p2_position:  # type: ignore
             try:
                 trim(segment, p2_position, True, args.verbose)
                 if args.verbose:
-                    print(
-                        f"{segment.query_name}: ref start {segment.reference_start} >= primer_position {p2_position}",
-                        file=sys.stderr,
+                    console.debug(
+                        f"{segment.query_name}: ref start {segment.reference_start} >= primer_position {p2_position}"
                     )
             except Exception as e:
-                print(
-                    f"{segment.query_name}: problem soft masking right primer (error: {e}), skipping",
-                    file=sys.stderr,
+                console.read_warning(
+                    f"{segment.query_name}: problem soft masking right primer (error: {e}), skipping"
                 )
-                return False
+                return skip("trim_failed", chrom, amplicon)
 
         # check the the alignment still contains bases matching the reference
-        if "M" not in segment.cigarstring:  # type: ignore
+        if not any(op in MATCH_OPS for op, _ in segment.cigartuples):  # type: ignore
             if args.verbose:
-                print(
-                    f"{segment.query_name}:  dropped as does not match reference post masking",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment.query_name}:  dropped as does not match reference post masking"
                 )
-            return False
+            return skip("primer_only", chrom, amplicon)
 
         # Check require-full-length
         if args.require_full_length:
             if segment.reference_start > p1.end or segment.reference_end < p2.start:  # type: ignore
                 if args.verbose:
-                    print(
-                        f"{segment.query_name}: ref_start {segment.reference_start} > p1.end {p1.end} or ref_end {segment.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
-                        file=sys.stderr,
+                    console.debug(
+                        f"{segment.query_name}: ref_start {segment.reference_start} > p1.end {p1.end} or ref_end {segment.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping"
                     )
-                return False
+                return skip("not_full_length", chrom, amplicon)
 
         if genome_coverage is not None:
             genome_coverage[segment.reference_name][
@@ -495,18 +568,13 @@ def handle_segments(
         # If not normalising, write the segment to the output file and add it to amplicon depth numpy array
         if not args.normalise:
             outfile_writer.write(segment)
-            segment_amp_relative_start = segment.reference_start - p1.start
-            segment_amp_relative_end = segment.reference_end - p1.start  # type: ignore
-            if segment_amp_relative_start < 0:
-                segment_amp_relative_start = 0
+            add_fragment_depth(amp_depths[chrom][amplicon], segments, p1.start)
+            if qc is not None:
+                qc.kept(segments, chrom, amplicon, correctly_paired)
 
-            amp_depths[segment.reference_name][amplicon][
-                segment_amp_relative_start:segment_amp_relative_end
-            ] += 1
+            return (amplicon, False, correctly_paired, originals)
 
-            return (amplicon, False)
-
-        return (amplicon, segment)
+        return (amplicon, segment, correctly_paired, originals)
 
     else:
         for segment_of_pair in (segment1, segment2):
@@ -519,16 +587,14 @@ def handle_segments(
                         verbose=args.verbose,
                     )
                     if args.verbose:
-                        print(
-                            f"{segment_of_pair.query_name}: ref start {segment_of_pair.reference_start} >= primer_position {p1_position}",
-                            file=sys.stderr,
+                        console.debug(
+                            f"{segment_of_pair.query_name}: ref start {segment_of_pair.reference_start} >= primer_position {p1_position}"
                         )
                 except Exception as e:
-                    print(
-                        f"{segment_of_pair.query_name}: Problem soft masking left primer (error: {e}), skipping",
-                        file=sys.stderr,
+                    console.read_warning(
+                        f"{segment_of_pair.query_name}: Problem soft masking left primer (error: {e}), skipping"
                     )
-                    return False
+                    return skip("trim_failed", chrom, amplicon)
 
             if segment_of_pair.reference_end > p2_position:  # type: ignore
                 try:
@@ -539,82 +605,79 @@ def handle_segments(
                         verbose=args.verbose,
                     )
                     if args.verbose:
-                        print(
-                            f"{segment_of_pair.query_name}: ref_end {segment_of_pair.reference_end} >= primer_position {p2_position}",
-                            file=sys.stderr,
+                        console.debug(
+                            f"{segment_of_pair.query_name}: ref_end {segment_of_pair.reference_end} >= primer_position {p2_position}"
                         )
                 except Exception as e:
-                    print(
-                        f"{segment_of_pair.query_name}: Problem soft masking right primer (error: {e}), skipping",
-                        file=sys.stderr,
+                    console.read_warning(
+                        f"{segment_of_pair.query_name}: Problem soft masking right primer (error: {e}), skipping"
                     )
-                    return False
+                    return skip("trim_failed", chrom, amplicon)
 
         # check the the alignment still contains bases matching the reference
-        if "M" not in segment1.cigarstring or "M" not in segment2.cigarstring:  # type: ignore
+        if not all(
+            any(op in MATCH_OPS for op, _ in seg.cigartuples)  # type: ignore
+            for seg in segments
+        ):
             if args.verbose:
-                print(
-                    f"{segment1.query_name}: Paired segment dropped as does not match reference post masking",
-                    file=sys.stderr,
+                console.debug(
+                    f"{segment1.query_name}: Paired segment dropped as does not match reference post masking"
                 )
-            return False
+            return skip("primer_only", chrom, amplicon)
 
         if args.require_full_length:
-            if segment1.reference_start < segment2.reference_start:
-                if (
-                    segment1.reference_start > p1.end  # type: ignore
-                    or segment2.reference_end < p2.start  # type: ignore
-                ):
-                    if args.verbose:
-                        print(
-                            f"{segment1.query_name}: ref_start {segment1.reference_start} > p1.end {p1.end} or ref_end {segment2.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping",
-                            file=sys.stderr,
-                        )
-                    return False
-            else:
-                if (
-                    segment2.reference_start > p1.end
-                    or segment1.reference_end < p2.start  # type: ignore
-                ):
-                    if args.verbose:
-                        print(
-                            f"{segment1.query_name}: ref_end {segment1.reference_end} < p2.start {p2.start} or ref_start {segment2.reference_start} > p1.end {p1.end}, does not span a full amplicon, skipping",
-                            file=sys.stderr,
-                        )
-                    return False
+            # the fragment's ends, which need not both come from the same mate
+            frag_start = min(s.reference_start for s in segments)
+            frag_end = max(s.reference_end for s in segments)  # type: ignore
+            if frag_start > p1.end or frag_end < p2.start:
+                if args.verbose:
+                    console.debug(
+                        f"{segment1.query_name}: ref_start {frag_start} > p1.end {p1.end} or ref_end {frag_end} < p2.start {p2.start}, does not span a full amplicon, skipping"
+                    )
+                return skip("not_full_length", chrom, amplicon)
 
+        # genome coverage counts each mate, matching samtools depth, unlike the fragment depths used for
+        # --normalise and --amp-depth-report
         if genome_coverage is not None:
             for seg in (segment1, segment2):
                 genome_coverage[seg.reference_name][
                     seg.reference_start : seg.reference_end
                 ] += 1
 
-        # If not normalising, write the segments to the output file and add them to amplicon depth numpy array
+        # If not normalising, write the segments to the output file and add the fragment to amplicon depth numpy array
         if not args.normalise:
             outfile_writer.write(segment1)
             outfile_writer.write(segment2)
-            for segment_in_pair in (segment1, segment2):
-                segment_amp_relative_start = segment_in_pair.reference_start - p1.start
-                segment_amp_relative_end = segment_in_pair.reference_end - p1.start  # type: ignore
-                if segment_amp_relative_start < 0:
-                    segment_amp_relative_start = 0
-            amp_depths[segment1.reference_name][amplicon][
-                segment_amp_relative_start:segment_amp_relative_end
-            ] += 1
+            add_fragment_depth(amp_depths[chrom][amplicon], segments, p1.start)
+            if qc is not None:
+                qc.kept(segments, chrom, amplicon, correctly_paired)
 
-            return (amplicon, False)
+            return (amplicon, False, correctly_paired, originals)
 
-    return (amplicon, segment)
+    return (amplicon, segment, correctly_paired, originals)
 
 
-def read_pair_generator(bam, region_string=None):
+def read_pair_generator(bam, region_string=None, qc=None, rejected=None):
     """
     Generate read pairs in a BAM file or within a region string.
-    Reads are added to read_dict until a pair is found.
+    Reads are added to read_dict until a pair is found. Only proper pairs are yielded, pairs which are
+    not (and mates which never find a partner) are recorded in the QC read fate report and written to the
+    rejected file if requested.
     """
+
+    def chrom_of(*reads):
+        mapped = [r for r in reads if r is not None and not r.is_unmapped]
+        return mapped[0].reference_name if mapped else None
+
+    # improper pairs only need buffering until their mate arrives if their fate is being recorded
+    track_rejects = qc is not None or rejected is not None
+
     read_dict = defaultdict(lambda: [None, None])
     for read in bam:
-        if not read.is_proper_pair:
+        # supplementary/secondary records share the qname and would be paired in place of the real mate
+        if read.is_supplementary or read.is_secondary:
+            continue
+        if not track_rejects and not read.is_proper_pair:
             continue
         qname = read.query_name
         if qname not in read_dict:
@@ -624,13 +687,37 @@ def read_pair_generator(bam, region_string=None):
                 read_dict[qname][1] = read
         else:
             if read.is_read1:
-                yield read, read_dict[qname][1]
+                pair = (read, read_dict[qname][1])
             else:
-                yield read_dict[qname][0], read
+                pair = (read_dict[qname][0], read)
             del read_dict[qname]
+            if all(r is not None and r.is_proper_pair for r in pair):
+                yield pair
+            elif any(r is None or r.is_unmapped for r in pair):
+                _skip(qc, "unmapped", chrom_of(*pair), rejected=rejected, records=pair)
+            else:
+                _skip(
+                    qc,
+                    "not_proper_pair",
+                    chrom_of(*pair),
+                    rejected=rejected,
+                    records=pair,
+                )
+
+    # mates whose partner never appeared (e.g. filtered out upstream)
+    for read1, read2 in read_dict.values():
+        read = read1 or read2
+        if read.is_unmapped or read.mate_is_unmapped:  # type: ignore
+            _skip(qc, "unmapped", chrom_of(read), rejected=rejected, records=(read,))
+        else:
+            _skip(
+                qc, "missing_mate", chrom_of(read), rejected=rejected, records=(read,)
+            )
 
 
-def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
+def create_primer_lookup(
+    ref_len_tuple, amplicons: list[Amplicon], padding=DEFAULT_PRIMER_MATCH_THRESHOLD
+):
     """
     Create a lookup table for efficient primer position queries across reference genomes.
 
@@ -652,8 +739,8 @@ def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
     amplicons : list[Amplicon]
         List of Amplicon objects containing primer scheme information
     padding : int, optional
-        Number of bases to extend amplicon boundaries on both sides to allow
-        for fuzzy matching of reads with barcodes/adapters (default: 35)
+        Number of bases to extend amplicon boundaries on both sides, so reads ending
+        slightly outside a primer 5' end are still assigned to it (default: 5)
 
     Returns
     -------
@@ -686,6 +773,7 @@ def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
                             ),
                         ] = amp
                         added = True
+                        break
                 # If not added, create new row, add the amplicon to that then add back to original array
                 if not added:
                     new_row = np.empty_like(None, shape=(1, chromlen + 1))
@@ -701,7 +789,11 @@ def create_primer_lookup(ref_len_tuple, amplicons: list[Amplicon], padding=35):
     return lookups
 
 
+COVERAGE_THRESHOLDS = [1, 10, 20, 100, 1000]
+
+
 def write_genome_coverage(filepath, genome_coverage, label=None):
+    """Write per-position coverage and return (label, total positions, [(threshold, count)])."""
     total_len = sum(len(arr) for arr in genome_coverage.values())
     with open(filepath, "w", newline="") as fh:
         writer = csv.DictWriter(
@@ -712,14 +804,42 @@ def write_genome_coverage(filepath, genome_coverage, label=None):
             for i, d in enumerate(depths):
                 writer.writerow({"chrom": chrom, "pos": i + 1, "depth": int(d)})
     all_depths = np.concatenate(list(genome_coverage.values()))
-    thresholds = [1, 10, 20, 100, 1000]
-    prefix = f"{label}: " if label else ""
-    print(f"{prefix}Genome coverage summary", file=sys.stderr)
-    print(f"{prefix}  Total positions: {total_len}", file=sys.stderr)
-    for t in thresholds:
-        count = int(np.sum(all_depths >= t))
-        pct = (count / total_len) * 100 if total_len > 0 else 0
-        print(f"{prefix}  >= {t}x: {count}/{total_len} ({pct:.2f}%)", file=sys.stderr)
+    counts = [(t, int(np.sum(all_depths >= t))) for t in COVERAGE_THRESHOLDS]
+    return label, total_len, counts
+
+
+def print_coverage_summaries(summaries):
+    """Print genome coverage summaries: a table on a terminal, prefixed lines in a log."""
+    console.heading("Coverage")
+    if not console.live:
+        for label, total_len, counts in summaries:
+            prefix = f"{label}: " if label else ""
+            console.line(f"{prefix}Genome coverage summary")
+            console.line(f"{prefix}  Total positions: {total_len}")
+            for t, count in counts:
+                pct = (count / total_len) * 100 if total_len > 0 else 0
+                console.line(f"{prefix}  >= {t}x: {count}/{total_len} ({pct:.2f}%)")
+        return
+
+    col = 24
+    header = "".join(f"{(label or '').lower():>{col}}" for label, _, _ in summaries)
+    console.line(console.style(f"{'':<11}{header}", BOLD))
+    console.line(
+        f"{'positions':<11}"
+        + "".join(f"{total_len:>{col}}" for _, total_len, _ in summaries)
+    )
+    for i, t in enumerate(COVERAGE_THRESHOLDS):
+        cells = []
+        for _, total_len, counts in summaries:
+            count = counts[i][1]
+            pct = (count / total_len) * 100 if total_len > 0 else 0
+            cell = f"{count}  {pct:6.2f}%"
+            cells.append(
+                " " * (col - len(cell))
+                + f"{count}  "
+                + console.style(f"{pct:6.2f}%", BOLD)
+            )
+        console.line(f"{f'>= {t}x':<11}" + "".join(cells))
 
 
 def go(args):
@@ -727,12 +847,15 @@ def go(args):
 
     Based on the most likely primer position, based on the alignment coordinates.
     """
+    console.reset(quiet=getattr(args, "quiet", False), verbose=args.verbose)
+
     # guard for negative normalise
     if args.normalise is not None and args.normalise < 0:
-        print("normalise must be >= 0, exiting.", file=sys.stderr)
+        console.error("normalise must be >= 0, exiting.")
         sys.exit(1)
 
     # prepare the report outfile
+    report_writer = None
     if args.report:
         reportfh = open(args.report, "w")
         report_headers = [
@@ -758,6 +881,8 @@ def go(args):
 
     # open the primer scheme and get the pools
     scheme = Scheme.from_file(args.bedfile)
+    # keep the unmerged primers (including alts) for primer sequence lookups
+    unmerged_bedlines = list(scheme.bedlines)
 
     # Merge the primers
     scheme.bedlines = merge_primers(scheme.bedlines)
@@ -781,13 +906,31 @@ def go(args):
 
     first_segment = next(infile, None)
     if not first_segment:
-        print("No segments found in the input file, exiting.", file=sys.stderr)
+        console.error("No segments found in the input file, exiting.")
         sys.exit(1)
 
     # check if the first segment is paired, then chain the saved first segment with the infile iterator so nothing is lost
     paired = first_segment.is_paired
     chained_iterator = itertools.chain([first_segment], infile)
 
+    rejected_path = getattr(args, "rejected_output", None)
+    if rejected_path is not None and (
+        str(rejected_path) == "-" or not str(rejected_path).endswith((".bam", ".sam"))
+    ):
+        console.error(
+            "Rejected output file path must end with either .bam or .sam, exiting."
+        )
+        sys.exit(1)
+    if rejected_path is not None:
+        for other, label in ((args.samfile, "input"), (args.output, "output")):
+            if other and str(other) != "-" and same_file(rejected_path, other):
+                console.error(
+                    f"Rejected output file path is the same as the {label} file, exiting."
+                )
+                sys.exit(1)
+
+    # rejected records are written as read in, so they get the input header
+    rejected_header = infile.header.copy().to_dict()
     bam_header = infile.header.copy().to_dict()
     if not args.no_read_groups:
         bam_header["RG"] = []
@@ -797,14 +940,13 @@ def go(args):
             bam_header["RG"].append(read_group)
 
     cli_cmd = " ".join(sys.argv)
-    bam_header["PG"].append(
-        {
-            "PN": "align_trim",
-            "ID": "align_trim",
-            "VN": version("align_trim"),
-            "CL": cli_cmd,
-        }
-    )
+    pg = {
+        "PN": "align_trim",
+        "ID": "align_trim",
+        "VN": version("align_trim"),
+        "CL": cli_cmd,
+    }
+    bam_header.setdefault("PG", []).append(pg)
 
     # prepare the alignment outfile
     if args.output and args.output != "-":
@@ -813,14 +955,47 @@ def go(args):
         elif args.output.name.endswith(".sam"):
             outfile = pysam.AlignmentFile(args.output, "wh", header=bam_header)
         else:
-            print(
-                "Output file path must end with either .bam or .sam, exiting.",
-                file=sys.stderr,
+            console.error(
+                "Output file path must end with either .bam or .sam, exiting."
             )
             sys.exit(1)
 
     else:
         outfile = pysam.AlignmentFile("-", "wh", header=bam_header)
+
+    rejected = None
+    if rejected_path is not None:
+        rejected_header.setdefault("PG", []).append(dict(pg))
+        if paired:
+            # pairs are written when the second mate is read, and unpaired mates at the end
+            rejected_header.setdefault("HD", {"VN": "1.6"})["SO"] = "unsorted"
+        mode = "wb" if str(rejected_path).endswith(".bam") else "wh"
+        rejected = pysam.AlignmentFile(str(rejected_path), mode, header=rejected_header)
+
+    if not console.quiet:
+        console.heading("Run")
+        console.line(f"align_trim {version('align_trim')}")
+        reads = "paired-end" if paired else "single-end"
+        console.line(f"  input   {args.samfile or 'stdin'} ({reads})")
+        console.line(
+            f"  scheme  {args.bedfile} ({len(amplicon_list)} amplicons, "
+            f"{len(amplicons)} reference{'s' if len(amplicons) != 1 else ''})"
+        )
+        console.line(f"  output  {args.output or 'stdout'}")
+        if rejected is not None:
+            console.line(f"  rejected  {rejected_path}")
+
+    # a live bar would be drawn in among SAM records written to the same terminal
+    sam_on_terminal = (
+        not args.output or str(args.output) == "-"
+    ) and sys.stdout.isatty()
+    progress = console.progress(
+        fraction=bam_fraction(infile, args.samfile),
+        enabled=not console.quiet,
+        live=not sam_on_terminal,
+    )
+    chained_iterator = progress.track(chained_iterator)
+    n_pairs = 0
 
     # Initialise the amplicon depth dict
     amp_depths = {}
@@ -845,6 +1020,8 @@ def go(args):
         padding=args.primer_match_threshold,
     )
 
+    qc = QC.from_args(args, amplicon_list, primer_lookup, unmerged_bedlines)
+
     # Initialise genome-wide coverage arrays if requested
     genome_coverage_pre = None
     genome_coverage_post = None
@@ -867,36 +1044,28 @@ def go(args):
             }
 
     if paired:
-        read_pairs = read_pair_generator(chained_iterator)
+        read_pairs = read_pair_generator(chained_iterator, qc=qc, rejected=rejected)
 
         for segments in read_pairs:
-            if args.report:
-                trimming_tuple = handle_segments(
-                    segment=segments,  # type: ignore
-                    lookup=primer_lookup,
-                    args=args,
-                    report_writer=report_writer,  # type: ignore
-                    min_mapq=args.min_mapq,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                )
-            else:
-                trimming_tuple = handle_segments(
-                    segment=segments,  # type: ignore
-                    lookup=primer_lookup,
-                    args=args,
-                    min_mapq=args.min_mapq,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                )
+            n_pairs += 1
+            trimming_tuple = handle_segments(
+                segment=segments,  # type: ignore
+                lookup=primer_lookup,
+                args=args,
+                report_writer=report_writer,
+                min_mapq=args.min_mapq,
+                outfile_writer=outfile,
+                amp_depths=amp_depths,
+                genome_coverage=genome_coverage_pre,
+                qc=qc,
+                rejected=rejected,
+            )
 
             if not trimming_tuple:
                 continue
 
             # unpack the trimming tuple since segment passed trimming
-            amplicon, trimmed_pair = trimming_tuple
+            amplicon, trimmed_pair, correctly_paired, originals = trimming_tuple
 
             # If we aren't normalising the segments will have already been written to the outfile
             if not args.normalise and not trimmed_pair:
@@ -907,21 +1076,24 @@ def go(args):
                 state = norm_state[(chrom, amplicon)]
                 p_start = amplicons[chrom][amplicon].amplicon_start
                 test_depths = np.copy(state["depth"])
-                for seg in trimmed_pair:  # type: ignore
-                    relative_start = max(0, seg.reference_start - p_start)
-                    relative_end = seg.reference_end - p_start
-                    test_depths[relative_start:relative_end] += 1
+                # count the fragment once where the mates overlap
+                add_fragment_depth(test_depths, trimmed_pair, p_start)
                 test_distance = np.mean(np.abs(test_depths - args.normalise))
                 if test_distance < state["distance"]:
                     state["depth"] = test_depths
                     state["distance"] = test_distance
                     outfile.write(trimmed_pair[0])  # type: ignore
                     outfile.write(trimmed_pair[1])  # type: ignore
+                    # per mate, matching samtools depth
                     if genome_coverage_post is not None:
                         for seg in trimmed_pair:  # type: ignore
                             genome_coverage_post[seg.reference_name][
                                 seg.reference_start : seg.reference_end
                             ] += 1
+                    if qc is not None:
+                        qc.kept(trimmed_pair, chrom, amplicon, correctly_paired)
+                else:
+                    _skip(qc, "by_normalise", chrom, amplicon, rejected, originals)
 
         if args.normalise:
             mean_amp_depths = {k: np.mean(v["depth"]) for k, v in norm_state.items()}
@@ -936,46 +1108,40 @@ def go(args):
             with open(args.amp_depth_report, "w") as amp_depth_report_fh:
                 writer = csv.DictWriter(
                     amp_depth_report_fh,
-                    fieldnames=["chrom", "amplicon", "mean_depth"],
+                    fieldnames=["chrom", "amplicon", "mean_fragment_depth"],
                     delimiter="\t",
                 )
                 writer.writeheader()
                 for (chrom, amplicon), depth in mean_amp_depths.items():
                     writer.writerow(
-                        {"chrom": chrom, "amplicon": amplicon, "mean_depth": depth}
+                        {
+                            "chrom": chrom,
+                            "amplicon": amplicon,
+                            "mean_fragment_depth": depth,
+                        }
                     )
 
     else:
         # iterate over the alignment segments in the input SAM file
         for segment in chained_iterator:
-            if args.report:
-                trimming_tuple = handle_segments(
-                    segment=segment,
-                    args=args,
-                    report_writer=report_writer,  # type: ignore
-                    min_mapq=args.min_mapq,
-                    lookup=primer_lookup,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                )
-
-            else:
-                trimming_tuple = handle_segments(
-                    segment=segment,
-                    args=args,
-                    min_mapq=args.min_mapq,
-                    lookup=primer_lookup,
-                    outfile_writer=outfile,
-                    amp_depths=amp_depths,
-                    genome_coverage=genome_coverage_pre,
-                )
+            trimming_tuple = handle_segments(
+                segment=segment,
+                args=args,
+                report_writer=report_writer,
+                min_mapq=args.min_mapq,
+                lookup=primer_lookup,
+                outfile_writer=outfile,
+                amp_depths=amp_depths,
+                genome_coverage=genome_coverage_pre,
+                qc=qc,
+                rejected=rejected,
+            )
 
             if not trimming_tuple:
                 continue
 
             # unpack the trimming tuple since segment passed trimming
-            amplicon, trimmed_segment = trimming_tuple
+            amplicon, trimmed_segment, correctly_paired, originals = trimming_tuple
 
             # If we aren't normalising the segments will have already been written to the outfile
             if not args.normalise and not trimmed_segment:
@@ -986,9 +1152,7 @@ def go(args):
                 state = norm_state[(chrom, amplicon)]
                 p_start = amplicons[chrom][amplicon].amplicon_start
                 test_depths = np.copy(state["depth"])
-                relative_start = max(0, trimmed_segment.reference_start - p_start)  # type: ignore
-                relative_end = trimmed_segment.reference_end - p_start  # type: ignore
-                test_depths[relative_start:relative_end] += 1
+                add_fragment_depth(test_depths, (trimmed_segment,), p_start)
                 test_distance = np.mean(np.abs(test_depths - args.normalise))
                 if test_distance < state["distance"]:
                     state["depth"] = test_depths
@@ -998,6 +1162,10 @@ def go(args):
                         genome_coverage_post[trimmed_segment.reference_name][  # type: ignore
                             trimmed_segment.reference_start : trimmed_segment.reference_end  # type: ignore
                         ] += 1
+                    if qc is not None:
+                        qc.kept((trimmed_segment,), chrom, amplicon, correctly_paired)
+                else:
+                    _skip(qc, "by_normalise", chrom, amplicon, rejected, originals)
 
         # normalise if requested
         if args.normalise:
@@ -1014,31 +1182,49 @@ def go(args):
             with open(args.amp_depth_report, "w") as amp_depth_report_fh:
                 writer = csv.DictWriter(
                     amp_depth_report_fh,
-                    fieldnames=["chrom", "amplicon", "mean_depth"],
+                    fieldnames=["chrom", "amplicon", "mean_fragment_depth"],
                     delimiter="\t",
                 )
                 writer.writeheader()
 
                 for (chrom, amplicon), depth in mean_amp_depths.items():
                     writer.writerow(
-                        {"chrom": chrom, "amplicon": amplicon, "mean_depth": depth}
+                        {
+                            "chrom": chrom,
+                            "amplicon": amplicon,
+                            "mean_fragment_depth": depth,
+                        }
                     )
+
+    progress.done(f"{n_pairs:,} proper pairs" if paired else None)
 
     # Write genome coverage reports
     if args.genome_coverage_report:
         pre_path = f"{args.genome_coverage_report}.pre-normalisation.coverage.tsv"
-        write_genome_coverage(pre_path, genome_coverage_pre, label="Pre-normalisation")
-        if args.normalise and genome_coverage_post is not None:
-            post_path = (
-                f"{args.genome_coverage_report}.post-normalisation.coverage.tsv"
-            )
+        summaries = [
             write_genome_coverage(
-                post_path, genome_coverage_post, label="Post-normalisation"
+                pre_path, genome_coverage_pre, label="Pre-normalisation"
             )
+        ]
+        if args.normalise and genome_coverage_post is not None:
+            post_path = f"{args.genome_coverage_report}.post-normalisation.coverage.tsv"
+            summaries.append(
+                write_genome_coverage(
+                    post_path, genome_coverage_post, label="Post-normalisation"
+                )
+            )
+        print_coverage_summaries(summaries)
+
+    if qc is not None:
+        qc.write(args.qc_prefix)
+
+    console.flush_warnings()
 
     # close up the file handles
     infile.close()
     outfile.close()
+    if rejected is not None:
+        rejected.close()
     if args.report:
         reportfh.close()  # type: ignore
 
@@ -1063,7 +1249,7 @@ def main():
         "--normalise",
         "-n",
         type=int,
-        help="Subsample to N coverage per amplicon. Use 0 for no normalisation. (default: %(default)s)",
+        help="Subsample to N coverage per amplicon, counted in fragments (a read pair counts once where its mates overlap). Use 0 for no normalisation. (default: %(default)s)",
         default=0,
     )
     parser.add_argument(
@@ -1077,8 +1263,8 @@ def main():
         "--primer-match-threshold",
         "-p",
         type=int,
-        default=35,
-        help="Add -p bases of padding to the outside (5' end of primer) of primer coordinates to allow fuzzy matching for reads with barcodes/adapters. (default: %(default)s)",
+        default=DEFAULT_PRIMER_MATCH_THRESHOLD,
+        help="Max distance in bases between a read end and a primer 5' end for the read to be assigned to that primer. Also used by the --qc-prefix reports to decide whether a read end is at a primer. (default: %(default)s)",
     )
     parser.add_argument(
         "--report", "-r", type=Path, help="Output report TSV to filepath"
@@ -1087,7 +1273,7 @@ def main():
         "--amp-depth-report",
         "-a",
         type=Path,
-        help="Output amplicon depth TSV to filepath",
+        help="Output amplicon depth TSV (mean fragment depth per amplicon) to filepath",
     )
     parser.add_argument(
         "--genome-coverage-report",
@@ -1096,6 +1282,20 @@ def main():
         default=None,
         metavar="PREFIX",
         help="Output per-position genome coverage TSV(s) using PREFIX. Produces PREFIX.pre-normalisation.coverage.tsv (always) and PREFIX.post-normalisation.coverage.tsv (when --normalise is used). Summary stats are printed to stderr.",
+    )
+    parser.add_argument(
+        "--qc-prefix",
+        type=str,
+        default=None,
+        metavar="PREFIX",
+        help="Output amplicon QC reports as PREFIX.<name>.tsv (summary, amplicons, primer_pairs, split_reads, overlaps). Summary lines are printed to stderr.",
+    )
+    parser.add_argument(
+        "--rejected-output",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Also write the reads which were removed to FILE (.bam or .sam), as they were read in (untrimmed) and tagged ZR:Z:<reason>. Supplementary and secondary alignments are not written.",
     )
     parser.add_argument(
         "--no-trim-primers",
@@ -1111,7 +1311,7 @@ def main():
     parser.add_argument(
         "--allow-incorrect-pairs",
         action="store_true",
-        help="Allow reads to be assigned to amplicons even if the primers are not correctly paired, i.e. primer1 and primer2 are not from the same amplicon.",
+        help="Allow reads to be assigned to amplicons even if the primers are not correctly paired, i.e. primer1 and primer2 are not from the same amplicon. Reads lying inside two neighbouring amplicons are still removed, as they cannot be assigned to either.",
     )
     parser.add_argument(
         "--require-full-length",
@@ -1126,7 +1326,18 @@ def main():
         metavar="OUTPUT",
         help="Location to write the output samfile to, the output type will be determined by the file extension. If no <OUTPUT> or '-' provided, will write plaintext samfile to stdout",
     )
-    parser.add_argument("--verbose", "-v", action="store_true", help="Debug mode")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Debug mode: print per-read decisions to stderr (disables the progress bar)",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Only print the coverage summary, QC summary and warnings to stderr (no run details or progress)",
+    )
     parser.add_argument(
         "--version",
         action="version",
