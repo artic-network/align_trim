@@ -4,9 +4,11 @@ import csv
 import io
 import pathlib
 import random
+import shutil
 import statistics
 import tempfile
 import unittest
+import unittest.mock
 from collections import Counter, namedtuple
 
 import numpy as np
@@ -27,6 +29,7 @@ from align_trim.main import (
 )
 from align_trim.qc import (
     AMPLICON_REASONS,
+    INS_IDX,
     QC,
     base_frequencies,
     REASONS,
@@ -228,6 +231,15 @@ class TestReadPairFates(unittest.TestCase):
         )
         self.assertEqual(pairs, [proper])
         self.assertEqual(sum(qc.unassigned.values()), 0)
+
+    def test_improper_pairs_not_buffered_without_outputs(self):
+        """Without QC or rejected output, improper reads are dropped on sight rather than held for their mate"""
+        proper = self.mates("proper", 1 + 2 + 64, 1 + 2 + 128 + 16)
+        orphan = self.mates("orphan", 1 + 64, 0)[0]
+        with unittest.mock.patch("align_trim.main._skip") as skip:
+            pairs = list(read_pair_generator([proper[0], orphan, proper[1]]))
+        self.assertEqual(pairs, [proper])
+        skip.assert_not_called()
 
 
 class TestSplitAlignments(unittest.TestCase):
@@ -935,6 +947,127 @@ class TestAmbiguousAmplicon(unittest.TestCase):
         self.assertEqual(rows[("67", "68")]["ambiguous_fragments"], "2")
         self.assertEqual(rows[("67", "68")]["start"], "NA")
         self.assertIn("5 fragments lie inside two amplicons", stderr.getvalue())
+
+
+class TestAlternativePrimerEnds(unittest.TestCase):
+    """Ends at alternative primers (v3 RIGHT_14_2 ends at 4424, the merged RIGHT_14 at 4450) count as primer ends"""
+
+    def test_overlap_product_at_alt_primer(self):
+        qc = v3_qc()
+        p1 = qc._find_primer(qc.lookup, 4294, "+", CHROM)
+        p2 = qc._find_primer(qc.lookup, 4450, "-", CHROM)
+        self.assertEqual((p1.amplicon_number, p2.amplicon_number), (15, 14))
+        self.assertEqual(qc.pair(p1, p2, start=4294, end=4424), "at_overlap_primers")
+        self.assertEqual(qc.pair(p1, p2, start=4294, end=4437), "inside_overlap")
+
+    def test_alt_primer_end_is_amplicon_end(self):
+        qc = v3_qc()
+        self.assertTrue(qc._near_amplicon_end(CHROM, 4424))
+        self.assertFalse(qc._near_amplicon_end(CHROM, 4437))
+
+
+class TestOverlapCountingCigar(unittest.TestCase):
+    def test_insertion_needs_counted_anchor(self):
+        """An insertion with no base counted before it (leading, or after an N) adds nothing"""
+        counts = np.zeros((30, 7), dtype=int)
+        count_bases_in_window(make_segment(100, "2I10M"), 95, 125, counts)
+        self.assertEqual(int(counts[:, INS_IDX].sum()), 0)
+
+        counts = np.zeros((30, 7), dtype=int)
+        seg = make_segment(100, "5M1I5M", seq="ACGTN" + "A" + "ACGTA")
+        count_bases_in_window(seg, 100, 130, counts)
+        self.assertEqual(int(counts[:, INS_IDX].sum()), 0)
+
+    def test_skipped_region_not_counted(self):
+        counts = np.zeros((30, 7), dtype=int)
+        covered = count_bases_in_window(
+            make_segment(100, "5M10N5M"), 100, 130, counts
+        )
+        self.assertEqual(int(counts[5:15].sum()), 0)
+        self.assertFalse(covered[5:15].any())
+        self.assertEqual(int(covered.sum()), 10)
+
+
+class TestSplitJoinDeduplication(unittest.TestCase):
+    def test_mates_disagreeing_on_mapq_give_one_row(self):
+        """A join seen by both mates is one row even when only one mate's view of it has a low mapq part"""
+        qc = v3_qc()
+        mate1 = make_segment(30, "380M300S")
+        mate1.set_tag("SA", f"{CHROM},643,+,380S300M,60,0;")
+        mate2 = make_segment(642, "300S300M", reverse=True)
+        mate2.set_tag("SA", f"{CHROM},31,-,380M300S,5,0;")
+        qc.split((mate1, mate2))
+        self.assertEqual(dict(qc.split_fragments), {"amplicon_chimera": 1})
+        self.assertEqual(len(qc.joins), 1)
+        row = next(iter(qc.joins))
+        self.assertEqual((row[2], row[5], row[6]), (1, 3, "amplicon_chimera"))
+
+
+class TestFragmentEnds(unittest.TestCase):
+    def handle(self, segment, originals=(), **kwargs):
+        amplicons, lookup, qc = v532()
+        amp_depths = {
+            CHROM: {
+                a.amplicon_number: np.zeros(
+                    a.amplicon_end - a.amplicon_start, dtype=int
+                )
+                for a in amplicons
+            }
+        }
+        rejected = FakeWriter()
+        result = handle_segments(
+            segment=segment,
+            lookup=lookup,
+            args=create_args(**kwargs),
+            min_mapq=20,
+            outfile_writer=FakeWriter(),
+            amp_depths=amp_depths,
+            qc=qc,
+            rejected=rejected,
+            originals=originals,
+        )
+        return result, qc, rejected
+
+    def test_contained_mate(self):
+        """The fragment's right end is the rightmost mate end, even when that mate starts first"""
+        # v5.3.2 amplicon 1 is 47-447; mate2 lies inside mate1
+        mate1 = make_segment(47, "400M", name="q")
+        mate2 = make_segment(150, "150M", name="q", reverse=True)
+        result, qc, _ = self.handle((mate1, mate2), require_full_length=True)
+        self.assertEqual(result[0], 1)
+        self.assertEqual(qc.fates[(CHROM, 1)]["kept"], 1)
+
+    def test_unmapped_secondary_not_counted(self):
+        """An unmapped single-end record flagged secondary is not a fragment of its own"""
+        seg = make_segment(47, "400M")
+        seg.flag = 4 + 256
+        result, qc, rejected = self.handle(seg, originals=(seg,))
+        self.assertFalse(result)
+        self.assertEqual(sum(qc.unassigned.values()), 0)
+        self.assertEqual(rejected.records, [])
+
+
+class TestRejectedOutputAliasing(unittest.TestCase):
+    def test_same_path_as_output_or_input(self):
+        with tempfile.TemporaryDirectory(dir="tests", suffix="-alias") as tempdir:
+            tempdir = pathlib.Path(tempdir)
+            samfile = tempdir / "input.bam"
+            shutil.copy(BAM_PATH_V5_3_2, samfile)
+            out = tempdir / "out.sam"
+            for rejected in (out, samfile, tempdir / "." / "input.bam"):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as cm:
+                        go(
+                            create_args(
+                                samfile=str(samfile),
+                                output=out,
+                                rejected_output=rejected,
+                            )
+                        )
+                self.assertEqual(cm.exception.code, 1)
+                self.assertEqual(
+                    samfile.stat().st_size, BAM_PATH_V5_3_2.stat().st_size
+                )
 
 
 if __name__ == "__main__":

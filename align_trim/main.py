@@ -253,6 +253,14 @@ def add_fragment_depth(depths, segments, offset):
         depths[max(0, start - offset) : max(0, end - offset)] += 1
 
 
+def same_file(a, b) -> bool:
+    """True if paths a and b refer to the same file, whether or not it exists yet."""
+    a, b = Path(a), Path(b)
+    if a.exists() and b.exists():
+        return a.samefile(b)
+    return a.resolve() == b.resolve()
+
+
 def _skip(qc, fate, chrom=None, amplicon=None, rejected=None, records=()):
     """Record why a fragment (read or read pair) was removed and return False.
 
@@ -317,19 +325,8 @@ def handle_segments(
         segments = (segment,)
     chrom = segments[0].reference_name
 
-    # filter out unmapped, supplementary and secondary alignment segments
-    if not paired:
-        if segment.is_unmapped:
-            if args.verbose:
-                console.debug(f"{segment.query_name}: skipped as unmapped")
-            return skip("unmapped", chrom)
-    else:
-        if segment1.is_unmapped or segment2.is_unmapped:
-            if args.verbose:
-                console.debug(f"{segment1.query_name}: skipped as unmapped")
-            return skip("unmapped", chrom)
-
-    # supplementary/secondary records are extra alignments of a read counted via its primary record, so no fate is recorded
+    # supplementary/secondary records are extra alignments of a read counted via its primary record, so no fate is
+    # recorded, and they are filtered before the unmapped check so an unmapped one is not counted as a fragment
     if not paired:
         if segment.is_supplementary:
             if args.verbose:
@@ -345,6 +342,17 @@ def handle_segments(
             if args.verbose:
                 console.debug(f"{segment1.query_name}: skipped as supplementary")
             return False
+
+    if not paired:
+        if segment.is_unmapped:
+            if args.verbose:
+                console.debug(f"{segment.query_name}: skipped as unmapped")
+            return skip("unmapped", chrom)
+    else:
+        if segment1.is_unmapped or segment2.is_unmapped:
+            if args.verbose:
+                console.debug(f"{segment1.query_name}: skipped as unmapped")
+            return skip("unmapped", chrom)
 
     if not paired:
         if segment.mapping_quality < min_mapq:
@@ -375,56 +383,23 @@ def handle_segments(
     if qc is not None:
         qc.split(segments)
 
-    if not paired:
-        # locate the nearest primers to this alignment segment
-        p1 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment.reference_start,
-            direction="+",
-            chrom=segment.reference_name,
-        )
+    # the fragment runs from the leftmost mate start to the rightmost mate end, which need not be the same mate
+    # (e.g. one mate is contained in the other)
+    left_seg = min(segments, key=lambda s: s.reference_start)
+    right_seg = max(segments, key=lambda s: s.reference_end)  # type: ignore
 
-        p2 = find_primer_with_lookup(
-            lookup=lookup,
-            pos=segment.reference_end,
-            direction="-",
-            chrom=segment.reference_name,
-        )
-    else:
-        # locate the nearest primers to this alignment segment pair
-        if segment1.reference_start < segment2.reference_start:
-            # if segment1 starts before segment2, then segment1 is the left segment relative to the reference
-            p1 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment1.reference_start,
-                direction="+",
-                chrom=segment1.reference_name,
-            )
-            p2 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment2.reference_end,
-                direction="-",
-                chrom=segment2.reference_name,
-            )
-        else:
-            # otherwise then segment2 is the left segment relative to the reference
-            p1 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment2.reference_start,
-                direction="+",
-                chrom=segment2.reference_name,
-            )
-            p2 = find_primer_with_lookup(
-                lookup=lookup,
-                pos=segment1.reference_end,
-                direction="-",
-                chrom=segment1.reference_name,
-            )
-
-    left_seg, right_seg = (
-        sorted(segments, key=lambda s: s.reference_start)
-        if paired
-        else (segment, segment)
+    # locate the nearest primers to the fragment ends
+    p1 = find_primer_with_lookup(
+        lookup=lookup,
+        pos=left_seg.reference_start,
+        direction="+",
+        chrom=left_seg.reference_name,
+    )
+    p2 = find_primer_with_lookup(
+        lookup=lookup,
+        pos=right_seg.reference_end,
+        direction="-",
+        chrom=right_seg.reference_name,
     )
     if qc is not None:
         qc.same_direction(left_seg, right_seg, p1, p2)
@@ -626,26 +601,15 @@ def handle_segments(
             return skip("primer_only", chrom, amplicon)
 
         if args.require_full_length:
-            if segment1.reference_start < segment2.reference_start:
-                if (
-                    segment1.reference_start > p1.end  # type: ignore
-                    or segment2.reference_end < p2.start  # type: ignore
-                ):
-                    if args.verbose:
-                        console.debug(
-                            f"{segment1.query_name}: ref_start {segment1.reference_start} > p1.end {p1.end} or ref_end {segment2.reference_end} < p2.start {p2.start}, does not span a full amplicon, skipping"
-                        )
-                    return skip("not_full_length", chrom, amplicon)
-            else:
-                if (
-                    segment2.reference_start > p1.end
-                    or segment1.reference_end < p2.start  # type: ignore
-                ):
-                    if args.verbose:
-                        console.debug(
-                            f"{segment1.query_name}: ref_end {segment1.reference_end} < p2.start {p2.start} or ref_start {segment2.reference_start} > p1.end {p1.end}, does not span a full amplicon, skipping"
-                        )
-                    return skip("not_full_length", chrom, amplicon)
+            # the fragment's ends, which need not both come from the same mate
+            frag_start = min(s.reference_start for s in segments)
+            frag_end = max(s.reference_end for s in segments)  # type: ignore
+            if frag_start > p1.end or frag_end < p2.start:
+                if args.verbose:
+                    console.debug(
+                        f"{segment1.query_name}: ref_start {frag_start} > p1.end {p1.end} or ref_end {frag_end} < p2.start {p2.start}, does not span a full amplicon, skipping"
+                    )
+                return skip("not_full_length", chrom, amplicon)
 
         if genome_coverage is not None:
             for seg in (segment1, segment2):
@@ -678,10 +642,15 @@ def read_pair_generator(bam, region_string=None, qc=None, rejected=None):
         mapped = [r for r in reads if r is not None and not r.is_unmapped]
         return mapped[0].reference_name if mapped else None
 
+    # improper pairs only need buffering until their mate arrives if their fate is being recorded
+    track_rejects = qc is not None or rejected is not None
+
     read_dict = defaultdict(lambda: [None, None])
     for read in bam:
         # supplementary/secondary records share the qname and would be paired in place of the real mate
         if read.is_supplementary or read.is_secondary:
+            continue
+        if not track_rejects and not read.is_proper_pair:
             continue
         qname = read.query_name
         if qname not in read_dict:
@@ -923,6 +892,13 @@ def go(args):
             "Rejected output file path must end with either .bam or .sam, exiting."
         )
         sys.exit(1)
+    if rejected_path is not None:
+        for other, label in ((args.samfile, "input"), (args.output, "output")):
+            if other and str(other) != "-" and same_file(rejected_path, other):
+                console.error(
+                    f"Rejected output file path is the same as the {label} file, exiting."
+                )
+                sys.exit(1)
 
     # rejected records are written as read in, so they get the input header
     rejected_header = infile.header.copy().to_dict()

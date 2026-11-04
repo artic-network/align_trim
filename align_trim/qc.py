@@ -86,18 +86,37 @@ def revcomp(seq: str) -> str:
     return seq.translate(COMPLEMENT)[::-1]
 
 
+def primer_5p_ends(bedlines: list[BedLine]) -> dict:
+    """5' end of every (unmerged) primer, keyed by (chrom, amplicon, strand), so alternative primers are included."""
+    ends = defaultdict(set)
+    for bl in bedlines:
+        ends[(bl.chrom, bl.amplicon_number, bl.strand)].add(
+            bl.start if bl.strand == "+" else bl.end
+        )
+    return {k: sorted(v) for k, v in ends.items()}
+
+
+def at_primer_end(primer: BedLine, pos, left, tolerance, ends=None) -> bool:
+    """True if pos is within tolerance of the 5' end of a left (or right) primer, or of any of its alternatives
+    listed in ends."""
+    own, strand = (primer.start, "+") if left else (primer.end, "-")
+    candidates = (ends or {}).get((primer.chrom, primer.amplicon_number, strand), [own])
+    return any(abs(pos - e) <= tolerance for e in candidates)
+
+
 def classify_primer_pair(
     p1: BedLine,
     p2: BedLine,
     start=None,
     end=None,
     tolerance=DEFAULT_PRIMER_MATCH_THRESHOLD,
+    ends=None,
 ) -> str:
     """Classify a (left, right) primer pair by what it means in a tiling scheme.
 
     start/end are the fragment's reference span. When given, an overlap product must start and end within
     `tolerance` of the primer 5' ends, otherwise it is a partial piece of a normal amplicon which happens to
-    lie in the overlap.
+    lie in the overlap. ends (from primer_5p_ends) adds the alternative primers' 5' ends to those checked.
     """
     if p1.chrom != p2.chrom:
         return "different_references"
@@ -106,8 +125,9 @@ def classify_primer_pair(
         return "same_amplicon"
     if k == -1:
         # LEFT_{n+1} / RIGHT_n, short product from the overlap region
-        if start is not None and (
-            abs(start - p1.start) > tolerance or abs(end - p2.end) > tolerance
+        if start is not None and not (
+            at_primer_end(p1, start, True, tolerance, ends)
+            and at_primer_end(p2, end, False, tolerance, ends)
         ):
             return "inside_overlap"
         return "at_overlap_primers"
@@ -231,6 +251,9 @@ def count_bases_in_window(segment, start, end, counts, seen=None):
     def skip(i):
         return seen is not None and seen[i]
 
+    # window positions where this segment added to the depth (A C G T or DEL), which an insertion needs as its anchor
+    in_depth = np.zeros(end - start, dtype=bool)
+
     rpos = segment.reference_start
     qpos = 0
     for op, length in segment.cigartuples:
@@ -239,22 +262,28 @@ def count_bases_in_window(segment, start, end, counts, seen=None):
                 i = p - start
                 if skip(i):
                     continue
-                counts[i, BASE_INDEX.get(seq[qpos + p - rpos], N_IDX)] += 1
+                base = BASE_INDEX.get(seq[qpos + p - rpos], N_IDX)
+                counts[i, base] += 1
                 covered[i] = True
+                in_depth[i] = base != N_IDX
             rpos += length
             qpos += length
         elif op == 1:
             i = rpos - 1 - start
-            if 0 <= i < end - start and not skip(i):
+            if 0 <= i < end - start and in_depth[i]:
                 counts[i, INS_IDX] += 1
             qpos += length
-        elif op in (2, 3):
+        elif op == 2:
             for p in range(max(rpos, start), min(rpos + length, end)):
                 i = p - start
                 if skip(i):
                     continue
                 counts[i, DEL_IDX] += 1
                 covered[i] = True
+                in_depth[i] = True
+            rpos += length
+        elif op == 3:
+            # a skipped region (N) is not covered by the read, so contributes no observation
             rpos += length
         elif op == 4:
             qpos += length
@@ -336,9 +365,11 @@ class QC:
         self.split_checked = 0
         self.split_fragments = Counter()
         self.joins = Counter()
+        # amplicon ends, from the unmerged primers so alternative primers' ends are included
+        self.primer_ends = primer_5p_ends(bedlines)
         outer_ends = defaultdict(set)
-        for a in amplicon_list:
-            outer_ends[a.chrom].update((a.amplicon_start, a.amplicon_end))
+        for (chrom, _, _), positions in self.primer_ends.items():
+            outer_ends[chrom].update(positions)
         self.outer_ends = {c: np.array(sorted(e)) for c, e in outer_ends.items()}
 
         # fragments not assigned because they lie inside amplicons n and n+1, keyed (chrom, n)
@@ -411,7 +442,9 @@ class QC:
     # primer pairs
     def pair(self, p1, p2, pair_type=None, start=None, end=None):
         """Count a primer pair and return its type."""
-        pair_type = pair_type or classify_primer_pair(p1, p2, start, end, self.padding)
+        pair_type = pair_type or classify_primer_pair(
+            p1, p2, start, end, self.padding, self.primer_ends
+        )
         self.pairs[(p1, p2, pair_type)] += 1
         return pair_type
 
@@ -420,8 +453,12 @@ class QC:
 
         Records a left_primer_at_both_ends or right_primer_at_both_ends pair when found. Never changes what happens to the read.
         """
-        left_ok = p1 and abs(left_seg.reference_start - p1.start) <= self.padding
-        right_ok = p2 and abs(right_seg.reference_end - p2.end) <= self.padding
+        left_ok = p1 and at_primer_end(
+            p1, left_seg.reference_start, True, self.padding, self.primer_ends
+        )
+        right_ok = p2 and at_primer_end(
+            p2, right_seg.reference_end, False, self.padding, self.primer_ends
+        )
         if left_ok and right_ok:
             return
         left_hit = None if left_ok else self._scan_end(left_seg, left_end=True)
@@ -480,7 +517,9 @@ class QC:
         A join seen in both reads of a pair is counted once for the fragment.
         """
         self.split_checked += 1
-        rows = set()
+        # keyed by the breakpoint windows and orientation, so a join seen by both mates (whose parts can differ in
+        # extent and mapq) is one row: [join type, part used for each side's amplicon]
+        joins = {}
         for segment in segments:
             if not segment.has_tag("SA"):
                 continue
@@ -495,21 +534,44 @@ class QC:
                     join_type = "amplicon_chimera"
                 else:
                     join_type = "joined_inside_amplicon"
-                # each side is (chrom, 10 bp window start, amplicon), lower coordinate side first
+                # each side is (chrom, 10 bp window start), lower coordinate side first
                 sides = sorted(
                     (
-                        (
-                            part.chrom,
-                            (pos - 1) // BREAKPOINT_BIN * BREAKPOINT_BIN + 1,
-                            self._part_amplicon(part),
-                        )
-                        for part, pos in zip((a, b), breakpoint_positions(a, b))
-                    ),
-                    key=lambda side: side[:2],
+                        (part.chrom, (pos - 1) // BREAKPOINT_BIN * BREAKPOINT_BIN + 1),
+                        part,
+                    )
+                    for part, pos in zip((a, b), breakpoint_positions(a, b))
                 )
-                rows.add((*sides[0], *sides[1], join_type, join_orientation(a, b)))
-        if not rows:
+                key = (*sides[0][0], *sides[1][0], join_orientation(a, b))
+                if key not in joins:
+                    joins[key] = [join_type, sides[0][1], sides[1][1]]
+                    continue
+                # reconcile with the other mate's view: the most notable type (a confident call over a low mapq
+                # one), and for each side the part reaching furthest left, as the nearest to its left primer
+                seen = joins[key]
+                seen[0] = min(seen[0], join_type, key=SPLIT_TYPES.index)
+                for i, (_, part) in enumerate(sides, start=1):
+                    if part.ref_start < seen[i].ref_start:
+                        seen[i] = part
+        if not joins:
             return
+        rows = [
+            (
+                chrom_a,
+                win_a,
+                self._part_amplicon(part_a),
+                chrom_b,
+                win_b,
+                self._part_amplicon(part_b),
+                join_type,
+                orientation,
+            )
+            for (chrom_a, win_a, chrom_b, win_b, orientation), (
+                join_type,
+                part_a,
+                part_b,
+            ) in joins.items()
+        ]
         self.split_fragments[min((r[6] for r in rows), key=SPLIT_TYPES.index)] += 1
         for row in rows:
             self.joins[row] += 1

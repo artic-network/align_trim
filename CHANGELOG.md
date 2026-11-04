@@ -35,6 +35,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 - Reads where primer trimming would produce an invalid CIGAR (e.g. an indel inside the primer) were written with their start position moved but the CIGAR unchanged. They are now dropped.
 - Reads aligned with `=`/`X` CIGAR operations were dropped instead of trimmed.
 - A deletion left directly before the right primer softmask was kept, so reads ended in e.g. `1D22S` and reported a spurious deletion at the last base before the primer. It is now removed, as was already done for the left primer.
+- For paired-end data the right primer was looked up at the end of whichever mate started later, rather than the rightmost mate end, so a pair with one mate contained in the other could be given the wrong right primer or removed by `--require-full-length`.
 
 ## [1.2.0] - 2026-06-23
 
