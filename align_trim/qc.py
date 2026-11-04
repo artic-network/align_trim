@@ -37,19 +37,19 @@ REASONS = (
 )
 
 PAIR_TYPES = [
-    "expected",
-    "overlap_product",
-    "partial_in_overlap",
-    "long_same_pool",
-    "long_cross_pool",
-    "cross_chrom",
-    "other",
-    "two_left_primers",
-    "two_right_primers",
+    "same_amplicon",
+    "at_overlap_primers",
+    "inside_overlap",
+    "spans_amplicons_same_pool",
+    "spans_amplicons_other_pool",
+    "different_references",
+    "other_combination",
+    "left_primer_at_both_ends",
+    "right_primer_at_both_ends",
 ]
 
 # split read join types, most to least notable
-SPLIT_TYPES = ["amplicon_chimera", "within_amplicon", "low_mapq"]
+SPLIT_TYPES = ["amplicon_chimera", "joined_inside_amplicon", "low_mapq_part"]
 
 # default --primer-match-threshold: max distance (bp) between a read end and a primer 5' end (or amplicon end) for
 # the end to count as at that primer, used for primer lookup and every QC end check
@@ -100,21 +100,25 @@ def classify_primer_pair(
     lie in the overlap.
     """
     if p1.chrom != p2.chrom:
-        return "cross_chrom"
+        return "different_references"
     k = p2.amplicon_number - p1.amplicon_number
     if k == 0:
-        return "expected"
+        return "same_amplicon"
     if k == -1:
         # LEFT_{n+1} / RIGHT_n, short product from the overlap region
         if start is not None and (
             abs(start - p1.start) > tolerance or abs(end - p2.end) > tolerance
         ):
-            return "partial_in_overlap"
-        return "overlap_product"
+            return "inside_overlap"
+        return "at_overlap_primers"
     if k >= 1:
         # LEFT_n / RIGHT_{n+k}, the intervening amplicon(s) were skipped
-        return "long_same_pool" if p1.pool == p2.pool else "long_cross_pool"
-    return "other"
+        return (
+            "spans_amplicons_same_pool"
+            if p1.pool == p2.pool
+            else "spans_amplicons_other_pool"
+        )
+    return "other_combination"
 
 
 class Part(NamedTuple):
@@ -195,14 +199,14 @@ def breakpoint_positions(a: Part, b: Part) -> tuple[int, int]:
 
 
 def join_orientation(a: Part, b: Part) -> str:
-    """inverted: parts on opposite strands; collinear: same strand and in reference order; else non_collinear."""
+    """opposite_strands; same_strand_in_order (same chromosome, in reference order); else same_strand_out_of_order."""
     if a.strand != b.strand:
-        return "inverted"
+        return "opposite_strands"
     if a.chrom == b.chrom and (
         b.ref_start >= a.ref_start if a.strand == "+" else b.ref_start <= a.ref_start
     ):
-        return "collinear"
-    return "non_collinear"
+        return "same_strand_in_order"
+    return "same_strand_out_of_order"
 
 
 def count_bases_in_window(segment, start, end, counts, seen=None):
@@ -414,7 +418,7 @@ class QC:
     def same_direction(self, left_seg, right_seg, p1, p2):
         """Look for a same-direction primer at read ends not explained by the assigned primers.
 
-        Records a two_left_primers or two_right_primers pair when found. Never changes what happens to the read.
+        Records a left_primer_at_both_ends or right_primer_at_both_ends pair when found. Never changes what happens to the read.
         """
         left_ok = p1 and abs(left_seg.reference_start - p1.start) <= self.padding
         right_ok = p2 and abs(right_seg.reference_end - p2.end) <= self.padding
@@ -427,9 +431,9 @@ class QC:
         if not left or not right:
             return
         if left.strand == "+" and right.strand == "+":
-            self.pair(left, right, "two_left_primers")
+            self.pair(left, right, "left_primer_at_both_ends")
         elif left.strand == "-" and right.strand == "-":
-            self.pair(left, right, "two_right_primers")
+            self.pair(left, right, "right_primer_at_both_ends")
 
     def _scan_end(self, segment, left_end):
         seq = segment.query_sequence
@@ -483,14 +487,14 @@ class QC:
             parts = [primary_part(segment)] + parse_sa_tag(segment.get_tag("SA"))  # type: ignore
             for a, b in junctions(parts):
                 if a.mapq < self.min_mapq or b.mapq < self.min_mapq:
-                    join_type = "low_mapq"
+                    join_type = "low_mapq_part"
                 elif all(
                     self._near_amplicon_end(part.chrom, pos)
                     for part, pos in zip((a, b), breakpoints(a, b))
                 ):
                     join_type = "amplicon_chimera"
                 else:
-                    join_type = "within_amplicon"
+                    join_type = "joined_inside_amplicon"
                 # each side is (chrom, 10 bp window start, amplicon), lower coordinate side first
                 sides = sorted(
                     (
@@ -620,14 +624,15 @@ class QC:
         t = totals
         console.prefixed(
             "QC:",
-            f"primer pairs: same amplicon (expected) {t['expected']}; "
-            f"inside an overlap, so not assigned to an amplicon: short products of the overlap region "
-            f"{t['overlap_product']}, fragments with ends not at its primers {t['partial_in_overlap']}; "
-            f"long products skipping a primer site: same pool {t['long_same_pool']}, "
-            f"cross pool {t['long_cross_pool']}; "
-            f"between chromosomes {t['cross_chrom']}; other {t['other']}; "
-            f"also misprimed with two left primers {t['two_left_primers']}, "
-            f"two right primers {t['two_right_primers']}",
+            f"primer pairs: same amplicon {t['same_amplicon']}; "
+            f"inside an overlap, so not assigned to an amplicon: ends at the overlap primers "
+            f"{t['at_overlap_primers']}, ends not at those primers {t['inside_overlap']}; "
+            f"spanning amplicons: same pool {t['spans_amplicons_same_pool']}, "
+            f"other pool {t['spans_amplicons_other_pool']}; "
+            f"different references {t['different_references']}; "
+            f"other combinations {t['other_combination']}; "
+            f"also a left primer at both ends {t['left_primer_at_both_ends']}, "
+            f"a right primer at both ends {t['right_primer_at_both_ends']}",
         )
 
     def _write_split_reads(self, path):
@@ -652,8 +657,8 @@ class QC:
             "QC:",
             f"split reads: {split} of {self.split_checked} fragments ({_pct(split, self.split_checked)}); "
             f"amplicon chimeras {chimeras} ({_pct(chimeras, self.split_checked)}), "
-            f"within amplicon {self.split_fragments['within_amplicon']}, "
-            f"low mapq {self.split_fragments['low_mapq']}",
+            f"joined inside an amplicon {self.split_fragments['joined_inside_amplicon']}, "
+            f"low mapq part {self.split_fragments['low_mapq_part']}",
         )
 
     def _write_overlaps(self, path):

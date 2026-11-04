@@ -155,12 +155,12 @@ class TestBugFixes(unittest.TestCase):
 class TestClassifyPrimerPair(unittest.TestCase):
     def test_categories(self):
         cases = [
-            (Primer(CHROM, 5, 1), Primer(CHROM, 5, 1), "expected"),
-            (Primer(CHROM, 6, 2), Primer(CHROM, 5, 1), "overlap_product"),
-            (Primer(CHROM, 5, 1), Primer(CHROM, 7, 1), "long_same_pool"),
-            (Primer(CHROM, 5, 1), Primer(CHROM, 6, 2), "long_cross_pool"),
-            (Primer(CHROM, 5, 1), Primer(CHROM, 3, 1), "other"),
-            (Primer(CHROM, 5, 1), Primer("other", 5, 1), "cross_chrom"),
+            (Primer(CHROM, 5, 1), Primer(CHROM, 5, 1), "same_amplicon"),
+            (Primer(CHROM, 6, 2), Primer(CHROM, 5, 1), "at_overlap_primers"),
+            (Primer(CHROM, 5, 1), Primer(CHROM, 7, 1), "spans_amplicons_same_pool"),
+            (Primer(CHROM, 5, 1), Primer(CHROM, 6, 2), "spans_amplicons_other_pool"),
+            (Primer(CHROM, 5, 1), Primer(CHROM, 3, 1), "other_combination"),
+            (Primer(CHROM, 5, 1), Primer("other", 5, 1), "different_references"),
         ]
         for p1, p2, expected in cases:
             self.assertEqual(classify_primer_pair(p1, p2), expected)
@@ -170,11 +170,11 @@ class TestClassifyPrimerPair(unittest.TestCase):
         left = Primer(CHROM, 6, 2, start=1000, end=1022)
         right = Primer(CHROM, 5, 1, start=1080, end=1100)
         cases = [
-            ((1000, 1100), "overlap_product"),
-            ((1005, 1095), "overlap_product"),
-            ((995, 1105), "overlap_product"),
-            ((1006, 1100), "partial_in_overlap"),
-            ((1000, 1094), "partial_in_overlap"),
+            ((1000, 1100), "at_overlap_primers"),
+            ((1005, 1095), "at_overlap_primers"),
+            ((995, 1105), "at_overlap_primers"),
+            ((1006, 1100), "inside_overlap"),
+            ((1000, 1094), "inside_overlap"),
         ]
         for (start, end), expected in cases:
             self.assertEqual(
@@ -186,7 +186,7 @@ class TestClassifyPrimerPair(unittest.TestCase):
         left = Primer(CHROM, 5, 1, start=1000, end=1022)
         right = Primer(CHROM, 7, 1, start=1900, end=1922)
         self.assertEqual(
-            classify_primer_pair(left, right, 1100, 1800), "long_same_pool"
+            classify_primer_pair(left, right, 1100, 1800), "spans_amplicons_same_pool"
         )
 
 
@@ -244,11 +244,13 @@ class TestSplitAlignments(unittest.TestCase):
         self.assertEqual(junctions([collinear, primary]), [(primary, collinear)])
         # last aligned base before the break (100) and first after it (501), 1-based
         self.assertEqual(breakpoint_positions(primary, collinear), (100, 501))
-        self.assertEqual(join_orientation(primary, collinear), "collinear")
+        self.assertEqual(join_orientation(primary, collinear), "same_strand_in_order")
         backwards = parse_sa_tag("c,1001,+,100S50M,60,0")[0]._replace(ref_start=-50)
-        self.assertEqual(join_orientation(primary, backwards), "non_collinear")
+        self.assertEqual(
+            join_orientation(primary, backwards), "same_strand_out_of_order"
+        )
         inverted = parse_sa_tag("c,501,-,50M100S,60,0")[0]
-        self.assertEqual(join_orientation(primary, inverted), "inverted")
+        self.assertEqual(join_orientation(primary, inverted), "opposite_strands")
         # on the minus strand the part's read-order end is its lowest reference base
         self.assertEqual(breakpoint_positions(primary, inverted), (100, 550))
 
@@ -266,14 +268,14 @@ class TestSplitAlignments(unittest.TestCase):
             self.classify(f"{CHROM},643,+,380S300M,60,0;"), "amplicon_chimera"
         )
 
-    def test_within_amplicon(self):
+    def test_joined_inside_amplicon(self):
         # 200 is inside the amplicon 1 insert, away from every amplicon end
         self.assertEqual(
-            self.classify(f"{CHROM},201,+,380S300M,60,0;"), "within_amplicon"
+            self.classify(f"{CHROM},201,+,380S300M,60,0;"), "joined_inside_amplicon"
         )
 
     def test_low_mapq(self):
-        self.assertEqual(self.classify(f"{CHROM},643,+,380S300M,5,0;"), "low_mapq")
+        self.assertEqual(self.classify(f"{CHROM},643,+,380S300M,5,0;"), "low_mapq_part")
 
     def test_no_sa_tag(self):
         qc = v3_qc()
@@ -312,7 +314,7 @@ class TestSameDirection(unittest.TestCase):
         qc.same_direction(seg, seg, p1, p2)
         self.assertEqual(
             [(a.primername, b.primername, c) for a, b, c in qc.pairs],
-            [("nCoV-2019_1_LEFT_1", "nCoV-2019_3_LEFT_1", "two_left_primers")],
+            [("nCoV-2019_1_LEFT_1", "nCoV-2019_3_LEFT_1", "left_primer_at_both_ends")],
         )
 
     def test_explained_ends_not_scanned(self):
@@ -535,7 +537,7 @@ class TestQCIntegration(unittest.TestCase):
 
     def test_primer_pairs(self):
         scheme = Scheme.from_file(create_args().bedfile)
-        # CorrectlyPaired ignores chrom, so it only equals "expected" for single chrom schemes
+        # CorrectlyPaired ignores chrom, so it only equals "same_amplicon" for single chrom schemes
         self.assertEqual(len({bl.chrom for bl in scheme.bedlines}), 1)
 
         with tempfile.TemporaryDirectory(dir="tests", suffix="-qc-pairs") as tempdir:
@@ -558,14 +560,19 @@ class TestQCIntegration(unittest.TestCase):
                 coordinate_rows = [
                     r
                     for r in rows
-                    if r["type"] not in ("two_left_primers", "two_right_primers")
+                    if r["type"]
+                    not in ("left_primer_at_both_ends", "right_primer_at_both_ends")
                 ]
                 report_rows = read_tsv(report)
                 self.assertEqual(
                     sum(int(r["fragments"]) for r in coordinate_rows), len(report_rows)
                 )
                 self.assertEqual(
-                    sum(int(r["fragments"]) for r in rows if r["type"] == "expected"),
+                    sum(
+                        int(r["fragments"])
+                        for r in rows
+                        if r["type"] == "same_amplicon"
+                    ),
                     sum(1 for r in report_rows if r["CorrectlyPaired"] == "True"),
                 )
             self.assertEqual(counts[False], counts[True])
@@ -590,7 +597,7 @@ class TestQCIntegration(unittest.TestCase):
             self.assertGreaterEqual(sum(int(r["fragments"]) for r in rows), expected)
             self.assertTrue(
                 {r["type"] for r in rows}
-                <= {"amplicon_chimera", "within_amplicon", "low_mapq"}
+                <= {"amplicon_chimera", "joined_inside_amplicon", "low_mapq_part"}
             )
             for r in rows:
                 # lower coordinate side first, positions are 1-based window starts
