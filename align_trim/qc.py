@@ -688,8 +688,10 @@ class QC:
             }
             for (p1, p2, pair_type), n in self.pairs.items()
         ]
+        # most common first, ties in coordinate order
         rows.sort(
             key=lambda r: (
+                -r["fragments"],
                 r["left_chrom"],
                 r["left_amplicon"],
                 r["right_chrom"],

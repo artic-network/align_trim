@@ -598,6 +598,8 @@ class TestQCIntegration(unittest.TestCase):
                     report=report,
                 )
                 rows = read_tsv(f"{prefix}.primer_pairs.tsv")
+                fragments = [int(r["fragments"]) for r in rows]
+                self.assertEqual(fragments, sorted(fragments, reverse=True))
                 counts[allow] = sorted(
                     (r["left_primer"], r["right_primer"], r["type"], r["fragments"])
                     for r in rows

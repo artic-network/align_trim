@@ -41,7 +41,7 @@ Fragments with low mapping quality are not assigned to an amplicon, so amplicons
 
 ## `PREFIX.primer_pairs.tsv`
 
-Counts of each combination of primers matched at the fragment's left (lower coordinate) and right ends, one row per combination seen. Columns: `left_chrom`, `left_primer`, `left_amplicon`, `right_chrom`, `right_primer`, `right_amplicon`, `type` and `fragments`. Counts are made before `--allow-incorrect-pairs` is applied, so they are the same with or without it.
+Counts of each combination of primers matched at the fragment's left (lower coordinate) and right ends, one row per combination seen, most fragments first. Columns: `left_chrom`, `left_primer`, `left_amplicon`, `right_chrom`, `right_primer`, `right_amplicon`, `type` and `fragments`. Counts are made before `--allow-incorrect-pairs` is applied, so they are the same with or without it.
 
 | type | primers | meaning |
 | --- | --- | --- |
