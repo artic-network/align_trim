@@ -49,7 +49,7 @@ def create_args(**kwargs):
         "samfile": str(BAM_PATH_V5_3_2.absolute()),
         "normalise": 0,
         "min_mapq": 20,
-        "primer_match_threshold": 35,
+        "primer_match_threshold": 5,
         "report": None,
         "amp_depth_report": None,
         "no_trim_primers": False,
@@ -59,7 +59,7 @@ def create_args(**kwargs):
         "allow_incorrect_pairs": False,
         "require_full_length": False,
         "output": None,
-        "genome_coverage_report": None,
+        "qc_prefix": None,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -87,7 +87,9 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
+            primer_lookup = create_primer_lookup(
+                ref_lengths, amplicons, args.primer_match_threshold
+            )
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -137,7 +139,9 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
+            primer_lookup = create_primer_lookup(
+                ref_lengths, amplicons, args.primer_match_threshold
+            )
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -227,7 +231,9 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
+            primer_lookup = create_primer_lookup(
+                ref_lengths, amplicons, args.primer_match_threshold
+            )
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -277,7 +283,9 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
+            primer_lookup = create_primer_lookup(
+                ref_lengths, amplicons, args.primer_match_threshold
+            )
 
             # Check the out sam is as expected
             for record in pysam.AlignmentFile(str(output_sam), "r"):
@@ -422,7 +430,9 @@ class TestIntegration(unittest.TestCase):
             pools = set([bl.pool for bl in scheme.bedlines])
 
             ref_lengths = [("MN908947.3", 29903)]
-            primer_lookup = create_primer_lookup(ref_lengths, amplicons, 35)
+            primer_lookup = create_primer_lookup(
+                ref_lengths, amplicons, args.primer_match_threshold
+            )
 
             # Check the out sam is as expected
             for segment1, segment2 in read_pair_generator(
