@@ -1,6 +1,6 @@
 # QC reports
 
-`--qc-prefix PREFIX` writes five tab-separated reports. They do not change the trimmed output.
+`--qc-prefix PREFIX` writes five tab-separated amplicon QC reports, alongside the [genome coverage report](outputs.md#genome-coverage-report). They do not change the trimmed output.
 
 Conventions used in every report:
 - **Counts are in fragments.** A fragment is one sequenced molecule: a single-end read, or a read pair (counted once). Supplementary and secondary alignments are extra alignments of a fragment already counted, so are not counted again.

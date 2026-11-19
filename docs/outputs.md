@@ -1,6 +1,6 @@
 # Report outputs
 
-Besides the trimmed SAM/BAM, `align_trim` can write the reports below. For the amplicon QC reports written by `--qc-prefix`, see [QC reports](qc-reports.md).
+Besides the trimmed SAM/BAM, `align_trim` can write the reports below. `--qc-prefix` writes the genome coverage report below as well as the amplicon QC reports described in [QC reports](qc-reports.md).
 
 ## Per-read report
 
@@ -19,7 +19,7 @@ When using `--report`, a tab-separated file is generated with the following colu
 
 ## Genome coverage report
 
-When using `--genome-coverage-report PREFIX`, per-position genome coverage is written as tab-separated files with columns `chrom`, `pos` (1-based), and `depth`.
+When using `--qc-prefix PREFIX`, per-position genome coverage is written as tab-separated files with columns `chrom`, `pos` (1-based), and `depth`.
 
 **Without `--normalise`**, a single file is produced:
 - `PREFIX.pre-normalisation.coverage.tsv` — coverage of all reads passing filtering and trimming

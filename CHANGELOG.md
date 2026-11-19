@@ -10,7 +10,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 
 ### Added
 
-- `--qc-prefix PREFIX` writes five amplicon QC reports: a run summary, per-amplicon fragment fates, primer pair combinations, split (supplementary) alignments and concordance between overlapping amplicons. A one-line summary of each is printed to stderr. The trimmed output is unchanged by this option. See [QC reports](docs/qc-reports.md).
+- `--qc-prefix PREFIX` writes five amplicon QC reports, alongside the genome coverage report: a run summary, per-amplicon fragment fates, primer pair combinations, split (supplementary) alignments and concordance between overlapping amplicons. A one-line summary of each is printed to stderr. The trimmed output is unchanged by this option. See [QC reports](docs/qc-reports.md).
 - A warning on stderr when the majority base differs between two overlapping amplicons, which can indicate contamination.
 - stderr is grouped under `Run`, `Coverage`, `QC summary` and `Warnings` headings. A completion line reports the records and proper pairs processed, the time taken and the rate. See [terminal output](docs/usage.md#terminal-output).
 - In a terminal: coloured headings, a live progress bar (percentage and time remaining for a BAM file, count and rate for stdin) and the coverage summary as a pre/post-normalisation table. Logs get plain `== Name ==` headings and a `progress:` line every 30 seconds. `NO_COLOR` and `FORCE_COLOR` are respected.
@@ -20,6 +20,7 @@ This release changes which reads are kept and how paired-end data is normalised,
 
 ### Changed
 
+- **Breaking:** `--genome-coverage-report`/`-g` is removed and merged into `--qc-prefix`, which writes the genome coverage and amplicon QC reports from one prefix. Replace `--genome-coverage-report PREFIX` with `--qc-prefix PREFIX`; the coverage file names are unchanged.
 - With `--allow-incorrect-pairs`, fragments lying inside two neighbouring amplicons are now removed. Previously they were kept, trimmed and normalised as amplicon n+1.
 - **Breaking:** the `--primer-match-threshold` default is now 5 (previously 35). Reads with an end more than 5 bases outside their primer's 5' end, i.e. containing genomic sequence beyond the amplicon, are no longer assigned to that primer. On the paired-end test data this removes about 0.4% of read pairs; single-end ONT test output is unchanged.
 - **Breaking:** `--normalise` counts paired-end data in fragments (a read pair counts once where its mates overlap), so paired-end output at the same `-n` is roughly double the size of previous versions.

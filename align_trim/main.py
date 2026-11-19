@@ -1025,7 +1025,7 @@ def go(args):
     # Initialise genome-wide coverage arrays if requested
     genome_coverage_pre = None
     genome_coverage_post = None
-    if args.genome_coverage_report:
+    if args.qc_prefix:
         genome_coverage_pre = {}
         for ref_name, ref_len in ref_lengths:
             genome_coverage_pre[ref_name] = np.zeros(ref_len, dtype=int)
@@ -1199,15 +1199,15 @@ def go(args):
     progress.done(f"{n_pairs:,} proper pairs" if paired else None)
 
     # Write genome coverage reports
-    if args.genome_coverage_report:
-        pre_path = f"{args.genome_coverage_report}.pre-normalisation.coverage.tsv"
+    if args.qc_prefix:
+        pre_path = f"{args.qc_prefix}.pre-normalisation.coverage.tsv"
         summaries = [
             write_genome_coverage(
                 pre_path, genome_coverage_pre, label="Pre-normalisation"
             )
         ]
         if args.normalise and genome_coverage_post is not None:
-            post_path = f"{args.genome_coverage_report}.post-normalisation.coverage.tsv"
+            post_path = f"{args.qc_prefix}.post-normalisation.coverage.tsv"
             summaries.append(
                 write_genome_coverage(
                     post_path, genome_coverage_post, label="Post-normalisation"
@@ -1276,19 +1276,11 @@ def main():
         help="Output amplicon depth TSV (mean fragment depth per amplicon) to filepath",
     )
     parser.add_argument(
-        "--genome-coverage-report",
-        "-g",
-        type=str,
-        default=None,
-        metavar="PREFIX",
-        help="Output per-position genome coverage TSV(s) using PREFIX. Produces PREFIX.pre-normalisation.coverage.tsv (always) and PREFIX.post-normalisation.coverage.tsv (when --normalise is used). Summary stats are printed to stderr.",
-    )
-    parser.add_argument(
         "--qc-prefix",
         type=str,
         default=None,
         metavar="PREFIX",
-        help="Output amplicon QC reports as PREFIX.<name>.tsv (summary, amplicons, primer_pairs, split_reads, overlaps). Summary lines are printed to stderr.",
+        help="Output genome coverage and amplicon QC reports as PREFIX.<name>.tsv: PREFIX.pre-normalisation.coverage.tsv, PREFIX.post-normalisation.coverage.tsv (when --normalise is used), and the QC reports (summary, amplicons, primer_pairs, split_reads, overlaps). Summary lines are printed to stderr.",
     )
     parser.add_argument(
         "--rejected-output",

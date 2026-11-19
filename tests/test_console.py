@@ -239,7 +239,6 @@ class TestSections(ConsoleTestCase):
             args = create_args(
                 output=(pathlib.Path(tempdir) / "out.sam").absolute(),
                 qc_prefix=f"{tempdir}/qc",
-                genome_coverage_report=f"{tempdir}/cov",
                 bedfile=BED_PATH_V3_0_0,
                 samfile=BAM_PATH_PAIRED_V3_0_0,
                 normalise=200,

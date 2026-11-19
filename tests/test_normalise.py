@@ -32,7 +32,6 @@ def create_args(**kwargs):
         "allow_incorrect_pairs": False,
         "require_full_length": False,
         "output": None,
-        "genome_coverage_report": None,
         "qc_prefix": None,
     }
     defaults.update(kwargs)

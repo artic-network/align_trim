@@ -33,8 +33,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 
 - `--report`, `-r` : Output detailed report TSV to specified filepath. See [outputs](outputs.md#per-read-report)
 - `--amp-depth-report`, `-a` : Output mean fragment depth for each amplicon as TSV to specified filepath. See [outputs](outputs.md#amplicon-depth-report)
-- `--genome-coverage-report`, `-g` : Output per-position genome coverage TSV(s) using the given prefix. Summary statistics (% genome covered at >=1x, >=10x, >=20x, >=100x, >=1000x) are printed to stderr. See [outputs](outputs.md#genome-coverage-report)
-- `--qc-prefix` : Output amplicon QC reports as `PREFIX.<name>.tsv`, with a one line summary per report printed to stderr. See [QC reports](qc-reports.md)
+- `--qc-prefix` : Output per-position genome coverage and amplicon QC reports as `PREFIX.<name>.tsv`. Genome coverage summary statistics (% genome covered at >=1x, >=10x, >=20x, >=100x, >=1000x) and a one line summary per QC report are printed to stderr. See [outputs](outputs.md#genome-coverage-report) and [QC reports](qc-reports.md)
 - `--rejected-output FILE` : Also write the reads which were removed to FILE (.bam or .sam), as they were read in (untrimmed) and tagged with the reason. See [outputs](outputs.md#rejected-reads)
 - `--no-read-groups` : Do not divide reads into pool-based read groups in SAM/BAM output
 
@@ -50,7 +49,7 @@ The tool reads alignment data from either a SAM/BAM file or stdin and outputs tr
 The trimmed SAM/BAM is the only thing written to stdout. Everything else goes to stderr, grouped under headings in this order (a section only appears when it has something to show):
 
 1. `Run`: version, input, scheme and output, progress while reads are processed, then one completion line (records, proper pairs, time and rate)
-2. `Coverage`: with `--genome-coverage-report`
+2. `Coverage`: with `--qc-prefix`
 3. `QC summary`: with `--qc-prefix`
 4. `Warnings`: e.g. a majority base difference between overlapping amplicons, or how many fragments were skipped because primer soft masking failed
 
@@ -89,14 +88,10 @@ align_trim primer.bed --samfile input.bam --output trimmed.bam
 ```bash
 align_trim primer.bed --samfile input.bam --normalise 100 \
   --report alignment_report.tsv --amp-depth-report depth_report.tsv \
-  --genome-coverage-report sample1 \
+  --qc-prefix sample1 \
   --output normalized.bam
 ```
 
-### Amplicon QC reports
-```bash
-align_trim primer.bed --samfile input.bam --qc-prefix sample1 --output trimmed.bam
-```
 
 ### Keep the rejected reads
 ```bash

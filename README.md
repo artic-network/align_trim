@@ -30,7 +30,7 @@ align_trim primer.bed --samfile input.bam --output trimmed.bam
 - `input.bam` is a sorted BAM of reads aligned to the scheme's reference. Leave out `--samfile` to read SAM/BAM from stdin.
 - The output format follows the extension (`.bam` or `.sam`). Leave out `--output` to write SAM to stdout.
 
-Normalise to 200x per amplicon and write the amplicon QC reports:
+Normalise to 200x per amplicon and write the genome coverage and amplicon QC reports:
 
 ```bash
 align_trim primer.bed --samfile input.bam --output trimmed.bam \
@@ -47,13 +47,13 @@ align_trim primer.bed --samfile input.bam --output trimmed.bam \
 | `--allow-incorrect-pairs` | keep reads whose two ends match primers from different amplicons (reads inside two neighbouring amplicons are still removed) |
 | `--require-full-length` | only keep reads spanning a whole amplicon (not for rapid barcoding or other fragmented libraries) |
 | `--no-trim-primers` | assign reads but leave primers untrimmed |
-| `--qc-prefix PREFIX` | write the amplicon QC reports as `PREFIX.<name>.tsv` |
+| `--qc-prefix PREFIX` | write the genome coverage and amplicon QC reports as `PREFIX.<name>.tsv` |
 
 Run `align_trim --help` for every option. Progress, coverage and QC summaries and warnings are printed to stderr; see [terminal output](https://github.com/artic-network/align_trim/blob/main/docs/usage.md#terminal-output).
 
 ## Documentation
 
 - [Usage](https://github.com/artic-network/align_trim/blob/main/docs/usage.md): every option, examples and output formats
-- [Report outputs](https://github.com/artic-network/align_trim/blob/main/docs/outputs.md): `--report`, `--amp-depth-report` and `--genome-coverage-report`
+- [Report outputs](https://github.com/artic-network/align_trim/blob/main/docs/outputs.md): `--report`, `--amp-depth-report` and the genome coverage reports
 - [QC reports](https://github.com/artic-network/align_trim/blob/main/docs/qc-reports.md): the `--qc-prefix` reports and how to read them
 - [Changelog](https://github.com/artic-network/align_trim/blob/main/CHANGELOG.md): changes in each release, including behaviour changes in 2.0.0
